@@ -1,0 +1,17 @@
+
+
+
+    check_setup:
+      ;Set clock to 16MHz no matter what it was originally set to
+      MOV.B CALBC1_16MHZ,&BCSCTL1
+      MOV.B CALDCO_16MHZ,&DCOCTL
+      
+      //UCA0CTL1=UCSWRST|UCSSEL_2;
+      //UCA0CTL0 = 0;
+      //9.6k
+      //UCA0MCTL = UCBRS_5+UCBRF_0;
+      //UCA0BR0 = 0x82;
+      //UCA0BR1 = 0x06;
+      //UCA0CTL1&=~UCSWRST;
+      
+    RET
