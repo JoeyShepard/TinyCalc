@@ -358,7 +358,7 @@ func_zero_mem:
   MOV #0,10(R9)
   MOV #0,12(R9)
   MOV #0,14(R9)
-RET  
+RET
 
 func_end:
 
