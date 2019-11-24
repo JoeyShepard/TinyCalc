@@ -1,0 +1,411 @@
+;FUNCTIONS FOR DRAWING THE STACK
+;===============================
+
+MAX_STACK_CHARS =       18      ;Max characters to print
+
+;DrawStack
+  ;R9 - stack levels to draw (3 or 4)
+  ;R4-R9 clobbered
+
+stack_draw_begin:
+
+;R9 - stack levels to draw (3 or 4)
+;R4-R9 clobbered
+DrawStack:
+  ;R9 - stack levels to draw (3 or 4)
+  ;R4-R8 - LCD functions
+  ;R9 - row counter
+
+  #ifdef TERMINAL_DEBUG
+    RET
+  #endif
+
+  CALL #LCD_clr
+  MOV R9,R4
+  MOV #0,R9
+  CMP #4,R4
+  JNE DrawStack_no_T
+    MOV #0,R6
+    CALL #LCD_row
+    CALL #puts_immed
+    DB "T: " 
+    EVEN
+    CMP #4,&stack_count
+    JL DrawStack_no_T_line
+      MOV #stack_T,R4
+      CALL #DrawStackLine
+    DrawStack_no_T_line:
+    MOV #1,R9
+  DrawStack_no_T:
+  
+  MOV R9,R6
+  INC R9
+  CALL #LCD_row
+  CALL #puts_immed
+  DB "Z: " 
+  EVEN
+  CMP #3,&stack_count
+  JL DrawStack_no_Z_line
+    MOV #stack_Z,R4
+    CALL #DrawStackLine
+  DrawStack_no_Z_line:
+  
+  MOV R9,R6
+  INC R9
+  CALL #LCD_row
+  CALL #puts_immed
+  DB "Y: " 
+  EVEN
+  CMP #2,&stack_count
+  JL DrawStack_no_Y_line
+    MOV #stack_Y,R4
+    CALL #DrawStackLine
+  DrawStack_no_Y_line:
+  
+  MOV R9,R6
+  CALL #LCD_row
+  CALL #puts_immed
+  DB "X: " 
+  EVEN
+  CMP #1,&stack_count
+  JL DrawStack_no_X_line
+    MOV #stack_X,R4
+    CALL #DrawStackLine
+  DrawStack_no_X_line:
+  
+  RET
+
+
+;R4 is pointer to number
+;R4-R8 free
+;Don't touch R9
+;R10 clobbered
+DrawStackLine:
+  PUSH R4       ;Save copy of pointer
+  ADD #2,R4     ;Skip header
+  MOV #32,R6    ;Count of digits to print
+  DrawStackLine_loop:
+    MOV.B @R4,R5
+    AND #0xF,R5
+    JNE DrawStackLine_loop_done
+    DEC R6
+    MOV.B @R4+,R5
+    AND #0xF0,R5
+    JNE DrawStackLine_loop_done
+    DEC R6
+    JNE DrawStackLine_loop      ;Loop through through up to 32 digits
+  DrawStackLine_loop_done:
+  
+  ;Count of non zero digits in R6
+  ;If R6 is 0, print 0
+  ;If exp is larger than max_digits, print compact
+  ;If exp is smaller than max_digits, print compact
+  ;Compact - just E stuff then rest is digits
+  
+  ;If all zeroes, print 0 and exit
+  TST R6
+  JNE DrawStackLine_not_zero
+    POP R4
+    CALL #puts_immed
+    DB "0"
+    EVEN
+    RET
+  DrawStackLine_not_zero:
+  ;Clear buffer
+  MOV #MAX_STACK_CHARS-1,R7
+  DrawStackLine_space_loop2:
+    MOV.B #' ',input_buffer(R7)
+    DEC R7
+    CMP #-1,R7
+    JNE DrawStackLine_space_loop2
+  MOV.B #0,&input_buffer+MAX_STACK_CHARS
+  
+  ;If more digits than exponent, print compact
+  CALL #DrawStackLine_minus_adjust
+  ;Now R5 is max chars less one if neg
+  ;and R4 is raw exponent
+  
+  ;TST R4
+  CMP #0x4000,R4        ;Half way between 0 and 0x7FFF (-1)
+  JL DrawStackLine_pos_exp
+    ;Exponent is negative, so handle a little differently
+      ;Basically, if digits would be truncated, display compact
+    MOV R4,R7   ;Switch sign of exponent
+    MOV #0x7FFF,R4      ;0x8000 less one since e-1 prints no zeroes after .
+    SUB R7,R4
+    SUB #2,R5   ;Begin with "0."
+    SUB R4,R5   ;Subtract count of zeroes
+    CMP R6,R5   ;If digits are larger than max characters, compact
+    JGE DrawStackLine_no_compact2
+      ;Exception, no compact if e=-1, so 1/3 wont be 3.3e-1
+      TST R4
+      JNE DrawStackLine_compact
+      MOV R5,R6
+    DrawStackLine_no_compact2:
+    ;Just print digits
+    
+    MOV R6,R7           ;Count of digits
+    MOV 0(SP),R8
+    ADD #17,R8
+    MOV #input_buffer,R10
+    MOV 0(SP),R6
+    BIT #0x8000,0(R6)
+    JEQ DrawStackLine_no_neg
+      MOV.B #'-',0(R10)
+      INC R10
+    DrawStackLine_no_neg:
+    MOV.B #'0',0(R10)
+    MOV.B #'.',1(R10)
+    ADD #2,R10
+    
+    DrawStackLine_zero_loop:
+      TST R4
+      JEQ DrawStackLine_zero_loop_done
+      DEC R4
+      MOV.B #'0',0(R10)
+      INC R10
+      JMP DrawStackLine_zero_loop
+    DrawStackLine_zero_loop_done:
+    
+    DrawStackLine_print_loop_neg:
+          
+      ;High nibble
+      CALL #DrawStackLine_high_nibble
+      JEQ DrawStackLine_print_done
+  
+      ;Low nibble
+      CALL #DrawStackLine_low_nibble
+      JNE DrawStackLine_print_loop_neg
+      
+    JMP DrawStackLine_print_done
+  DrawStackLine_pos_exp:
+  ;Exponent is positive
+  INC R4        ;Since e of 0 still prints at least one digit
+  CMP R4,R5     ;If exponent size is larger than max characters, compact
+  JGE DrawStackLine_no_compact1
+    JMP DrawStackLine_compact
+  DrawStackLine_no_compact1:
+  ;If digit count >= exponent then
+    ;If digit count >= max_chars, print max_chars
+    ;If digit count < max_chars, print digit_count
+  ;If digit count < exponent then, print exponent
+  CMP R4,R6     ;digit count, exponent
+  JL DrawStackLine_digit_lt_exp ;1. confirmed
+    MOV R5,R7
+    CMP R4,R7
+    JEQ DrawStackLine_no_R7_dec
+    JL DrawStackLine_no_R7_dec
+      DEC R7
+    DrawStackLine_no_R7_dec:
+    CMP R5,R6
+    JGE DrawStackLine_len_done  ;2. confirmed
+    MOV R6,R7                   ;3. confirmed
+    JMP DrawStackLine_len_done
+  DrawStackLine_digit_lt_exp:
+  ;digit count < exponent so print len = exponent
+  MOV R4,R7
+  DrawStackLine_len_done:
+  ;Digits to print is in R7
+
+  MOV 0(SP),R8
+  ADD #17,R8
+  MOV #input_buffer,R10
+  MOV 0(SP),R6
+  BIT #0x8000,0(R6)
+  JEQ DrawStackLine_no_neg_neg
+    MOV.B #'-',0(R10)
+    INC R10
+  DrawStackLine_no_neg_neg:
+    
+  DrawStackLine_print_loop:
+  
+    ;Decimal point
+    TST R4
+    JNE DrawStackLine_print_no_dec1
+      MOV.B #'.',0(R10)
+      INC R10
+    DrawStackLine_print_no_dec1:
+    DEC R4
+    
+    ;High nibble
+    CALL #DrawStackLine_high_nibble
+    JEQ DrawStackLine_print_done
+    
+    ;Decimal point
+    TST R4
+    JNE DrawStackLine_print_no_dec2
+      MOV.B #'.',0(R10)
+      INC R10
+    DrawStackLine_print_no_dec2:
+    DEC R4
+    
+    ;Low nibble
+    CALL #DrawStackLine_low_nibble
+    JNE DrawStackLine_print_loop
+    
+  DrawStackLine_print_done:
+  
+  ;Right justify here
+  
+  DrawStackLine_exit:
+  POP R4
+  MOV #input_buffer,R8
+  CALL #puts
+  
+  RET
+  
+  DrawStackLine_minus_adjust:
+    MOV 2(SP),R4
+    MOV @R4,R4
+    MOV #MAX_STACK_CHARS,R5
+    BIT #0x8000,R4        ;Test sign bit and make room for minus
+    JEQ DrawStackLine_no_minus
+      DEC R5
+      BIC #0x8000,R4
+    DrawStackLine_no_minus:
+    RET
+  
+  DrawStackLine_high_nibble:  
+    MOV.B @R8,R6
+    RRA R6
+    RRA R6
+    RRA R6
+    RRA R6
+    ADD #'0',R6
+    MOV.B R6,0(R10)
+    INC R10
+    DEC R7
+    RET
+  
+  DrawStackLine_low_nibble:  
+    MOV.B @R8,R6
+    AND #0xF,R6
+    ADD #'0',R6
+    MOV.B R6,0(R10)
+    INC R10
+    DEC R8
+    DEC R7
+    RET
+    
+
+  DrawStackLine_compact:
+    ;R6 - is digit count (still valid?)
+    CALL #DrawStackLine_minus_adjust
+    ;R5 is remaing characters
+    ;R4 is raw exponent
+    DEC R5              ;-1 for e character
+    CMP #1,R6
+    JEQ DrawStackLine_no_dec
+      DEC R5            ;-1 for . character
+    DrawStackLine_no_dec:
+    
+    MOV #0,R10          ;No - on e
+    CMP #0x4000,R4
+    JL DrawStackLine_compact_pos
+      MOV R4,R7
+      MOV #0x8000,R4
+      SUB R7,R4
+      DEC R5            ;-1 for - after e
+      MOV #1,R10        ;- after e
+    DrawStackLine_compact_pos:
+    
+    DEC R5              ;-1 for first digit of exp
+    CMP #1000,R4
+    JL DrawStackLine_compact_1000s
+      DEC R5            ;-1 for 1000s place
+    DrawStackLine_compact_1000s:
+    CMP #100,R4
+    JL DrawStackLine_compact_100s
+      DEC R5            ;-1 for 100s place
+    DrawStackLine_compact_100s:
+    CMP #10,R4
+    JL DrawStackLine_compact_10s
+      DEC R5            ;-1 for 10s place
+    DrawStackLine_compact_10s:
+    
+    ;If digits less than max left, then digits
+    ;If digits >= max left, then max left
+    MOV R5,R7
+    CMP R5,R6
+    JGE DrawStackLine_digits_print
+      MOV R6,R7
+    DrawStackLine_digits_print:
+    
+    MOV R10,R5          ;R5 should be free. R10 is whether - on e
+    MOV 0(SP),R8
+    ADD #17,R8
+    MOV #input_buffer,R10
+    MOV 0(SP),R6
+    BIT #0x8000,0(R6)
+    JEQ DrawStackLine_compact_no_neg
+      MOV.B #'-',0(R10)
+      INC R10
+    DrawStackLine_compact_no_neg:
+    
+    ;High nibble
+    CALL #DrawStackLine_high_nibble
+    JEQ DrawStackLine_compact_digits_done
+    MOV.B #'.',0(R10)
+    INC R10
+    DrawStackLine_digits_loop:
+      
+      ;Low nibble
+      CALL #DrawStackLine_low_nibble
+      JEQ DrawStackLine_compact_digits_done
+
+      ;High nibble
+      CALL #DrawStackLine_high_nibble
+      JNE DrawStackLine_digits_loop
+          
+    DrawStackLine_compact_digits_done:
+    
+    MOV.B #CUST_EE,0(R10)
+    INC R10
+    
+    TST R5
+    JEQ DrawStackLine_no_exp_neg
+      MOV.B #'-',0(R10)
+      INC R10
+    DrawStackLine_no_exp_neg:
+    
+    MOV #0,R5
+    MOV #1000,R6
+    MOV #0,R7           ;Non zero not found
+    DrawStackLine_compact_e_digits:
+      CMP R6,R4
+      JL DrawStackLine_compact_e_done
+      SUB R6,R4
+      INC R5
+      JMP DrawStackLine_compact_e_digits
+    DrawStackLine_compact_e_done:
+    TST R7
+    JNE DrawStackLine_compact_e_print
+    TST R5
+    JEQ DrawStackLine_compact_e_adjust
+    DrawStackLine_compact_e_print:
+      ADD #'0',R5
+      MOV.B R5,0(R10)
+      INC R10
+      MOV #1,R7
+    DrawStackLine_compact_e_adjust:
+    CMP #1000,R6
+    JNE DrawStackLine_compact_now_100
+      MOV #100,R6
+      JMP DrawStackLine_compact_now_done
+    DrawStackLine_compact_now_100:
+    CMP #100,R6
+    JNE DrawStackLine_compact_now_10
+      MOV #10,R6
+      JMP DrawStackLine_compact_now_done
+    DrawStackLine_compact_now_10:
+    CMP #10,R6
+    JNE DrawStackLine_compact_done
+      MOV #1,R6
+    DrawStackLine_compact_now_done:
+    MOV #0,R5
+    JMP DrawStackLine_compact_e_digits
+    
+    DrawStackLine_compact_done:
+    JMP DrawStackLine_exit
+  
+stack_draw_end:

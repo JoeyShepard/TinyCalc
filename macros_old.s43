@@ -1,0 +1,8 @@
+
+;Does not work because IAR is shitty
+DS_Immed  MACRO s
+          JEQ DS_Immed_data
+          DS s
+          EVEN
+          LOCAL DS_Immed_data
+          ENDM

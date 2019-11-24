@@ -1,0 +1,168 @@
+;KEY READING FUNCTIONS
+;=====================
+
+;getkey
+  ;R4 - returns first debounced key found, marks key as read
+  ;R5 - if 0, mark key read. if 1, don't mark
+
+;keys_setup
+  ;R4 - clobbered
+
+;scankeys
+  ;R4,R5,R6,R7 - clobbered
+
+
+keys_begin:
+
+;CONSTANTS
+;=========
+DEBOUNCE_LOOPS =        5
+KEY_COUNT =             30
+
+scankeys_sense_pins:
+DB BTN_SENSE6,BTN_SENSE5,BTN_SENSE4,BTN_SENSE3,BTN_SENSE2,BTN_SENSE1,0
+
+scankeys_sink_pins:
+DB BTN_SINK4,BTN_SINK5,BTN_SINK3,BTN_SINK2,BTN_SINK1,0
+EVEN
+
+;KEY CONSTANTS
+;=============
+KEY_BACK =      8
+KEY_ENTER =     13
+KEY_CHS =       'c'
+KEY_EXP =       'e'
+KEY_2ND =       's'
+KEY_SIN =       'S'
+KEY_COS =       'C'
+KEY_TAN =       'T'
+KEY_MENU =      'M'
+KEY_SWAP =      'X'
+KEY_ROLL =      'R'
+KEY_STO =       'o'
+KEY_RCL =       'r'
+KEY_VIEW =      'v'
+
+
+;CUSTOM KEYS
+;===========
+CUST_ARROW =    127
+CUST_EE =       128
+CUST_DEG =      129
+
+key_table:
+  DB KEY_2ND    ;1,1
+  DB KEY_ENTER  ;1,2
+  DB KEY_STO    ;1,3
+  DB KEY_RCL    ;1,4
+  DB KEY_VIEW   ;1,5            ON button
+  DB 0          ;1,6
+  DB KEY_SIN    ;2,1
+  DB KEY_SWAP   ;2,2            
+  DB '7'        ;2,3
+  DB '4'        ;2,4
+  DB '1'        ;2,5
+  DB '0'        ;2,6
+  DB KEY_COS    ;3,1
+  DB KEY_ROLL   ;3,2
+  DB '8'        ;3,3
+  DB '5'        ;3,4
+  DB '2'        ;3,5
+  DB '.'        ;3,6
+  DB KEY_TAN    ;4,1
+  DB KEY_EXP    ;4,2
+  DB '9'        ;4,3
+  DB '6'        ;4,4
+  DB '3'        ;4,5
+  DB KEY_CHS    ;4,6
+  DB KEY_MENU   ;5,1
+  DB KEY_BACK   ;5,2
+  DB '/'        ;5,3
+  DB '*'        ;5,4
+  DB '-'        ;5,5
+  DB '+'        ;5,6
+
+
+;R4 - returns first debounced key found
+;R5 - if 0, mark key read. if 1, don't mark
+getkey:
+  #ifdef TERMINAL_DEBUG
+    CALL #debug_getkey
+    RET
+  #endif
+
+  MOV #keys_down,R4
+  getkey_loop:
+    CMP.B #0xFF,0(R4)
+    JNE getkey_next_loop
+      TST R5
+      JNE getkey_no_mark
+        MOV.B #0xFE,0(R4)
+      getkey_no_mark:
+      SUB #(keys_down-1),R4
+      MOV.B (key_table-1)(R4),R4
+      RET
+    getkey_next_loop:
+    INC R4
+    CMP #(keys_down+KEY_COUNT),R4
+    JNE getkey_loop
+  MOV #0,R4
+  RET
+
+;R4 - clobbered
+keys_setup:
+  MOV #KEY_COUNT,R4
+  keys_setup_loop:
+    MOV.B #0,(keys_down-1)(R4) ;-1 to simplify countdown loop
+    DEC R4
+    JNE keys_setup_loop
+  RET
+
+;R4,R5,R6,R7 - clobbered
+scankeys:
+  #ifdef TERMINAL_DEBUG
+    RET
+  #endif
+
+  MOV #keys_down,R4             ;keys down array
+  ;MOV #scankeys_sense_pins,R5
+  MOV #scankeys_sink_pins,R6
+  
+  scankeys_loop:
+    BIS.B @R6,&P2DIR    ;Turn sink pin on
+    ;MOV #100,R5        ;Reliable
+    ;MOV #20,R5         ;Pressing 5 also triggers 6!
+    MOV #50,R5
+    ;Needed or reads multiple keys
+    ;NOT SURE HOW MANY CYCLES NEEDED THOUGH
+    scankeys_delay_loop:
+      DEC R5
+      JNE scankeys_delay_loop
+    MOV.B &P1IN,R7      ;Read input port
+    MOV #scankeys_sense_pins,R5
+    scankeys_loop_inner:
+      BIT.B @R5+,R7
+      JNE scankeys_no_key
+        ;key down
+        CMP.B #0xFF,0(R4)               ;If FF, skip since debounced
+        JEQ scankeys_keys_done
+        CMP.B #0xFE,0(R4)               ;If FE, skip since debounced and read
+        JEQ scankeys_keys_done
+        INC.B 0(R4)                     ;Otherwise, increase counter
+        CMP.B #DEBOUNCE_LOOPS,0(R4)     ;If hit limit, debounced
+        JNE scankeys_keys_done
+        MOV.B #0xFF,0(R4)               ;Mark key debounced
+        JMP scankeys_keys_done
+      scankeys_no_key:
+        MOV.B #0,0(R4)
+      scankeys_keys_done:
+      INC R4
+      TST.B 0(R5)
+      JNE scankeys_loop_inner
+    BIC.B @R6+,&P2DIR
+    TST.B 0(R6)
+    JNE scankeys_loop
+  RET
+  
+keys_end:
+  

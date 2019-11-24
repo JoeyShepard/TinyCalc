@@ -1,0 +1,43 @@
+;FUNCTION FOR MEASURING RAM AND FLASH USAGE
+;==========================================
+
+sizes_begin:
+
+total_code_size=code_end-code_begin
+ram_size=ram_end-ram_begin
+
+;Included files
+char_size=char_end-char_begin
+const_size=const_end-const_begin
+cordic_size=cordic_end-cordic_begin
+debug_size=debug_end-debug_begin
+error_size=error_end-error_begin
+func_size=func_end-func_begin
+input_size=input_end-input_begin
+keys_size=keys_end-keys_begin
+LCD_size=LCD_end-LCD_begin
+math_size=math_end-math_begin
+msp430_size=msp430_end-msp430_begin
+sizes_size=sizes_end-sizes_begin
+stack_size=stack_end-stack_begin
+stack_draw_size=stack_draw_end-stack_draw_begin
+
+calc_sizes:  
+  MOV #total_code_size,R4
+  MOV #ram_size,R4
+  MOV #char_size,R4
+  MOV #const_size,R4
+  MOV #cordic_size,R4
+  MOV #debug_size,R4
+  MOV #error_size,R4
+  MOV #func_size,R4
+  MOV #input_size,R4
+  MOV #keys_size,R4
+  MOV #LCD_size,R4
+  MOV #msp430_size,R4
+  MOV #sizes_size,R4
+  MOV #stack_size,R4
+  MOV #stack_draw_size,R4
+  RET
+  
+sizes_end:

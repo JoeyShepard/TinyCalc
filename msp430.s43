@@ -1,0 +1,65 @@
+;MSP430 FUNCTIONS NOT SPECIFIC TO PROJECT
+;========================================
+
+;delay_ms
+    ;R4 - ms to delay
+    ;R5 - clobbered
+
+;get_voltage
+    ;Returns voltage in R4
+
+;SPI_Send
+    ;R4 - data to send
+    ;R5 - clobbered
+    ;Returns in R4
+
+
+msp430_begin:
+
+;R4 - ms to delay
+;R5 - clobbered
+delay_ms:
+  MOV #(DELAY_TIME/3),R5
+  delay_ms_loop:
+    DEC R5
+    JNE delay_ms_loop
+    DEC R4
+    JNE delay_ms
+   RET
+
+;R4 - voltage
+get_voltage:
+  MOV #(SREF_1 + REFON + REF2_5V + ADC10ON + ADC10SHT_3),&ADC10CTL0
+  MOV #INCH_11,&ADC10CTL1
+  MOV #1,R4
+  CALL #delay_ms
+  BIS #(ENC + ADC10SC),&ADC10CTL0
+  adc_loop:
+    BIT #ADC10IFG,&ADC10CTL0
+    JEQ adc_loop
+  MOV &ADC10MEM,R4
+  RET
+  
+  
+ 
+;R4 - data to send
+;R5 - clobbered
+;Returns in R4
+SPI_Send:
+  #ifdef TERMINAL_DEBUG
+    MOV #0,R4
+    RET
+  #endif
+  SPI_Send_wait_loop:
+    MOV.B &UC0IFG,R5
+    AND.B #UCB0TXIFG,R5
+    JEQ SPI_Send_wait_loop
+  MOV.B R4,&UCB0TXBUF
+  SPI_Send_send_loop:
+    MOV.B &UCB0STAT,R5
+    AND.B #UCBUSY,R5
+    JNE SPI_Send_send_loop
+  MOV.B &UCB0RXBUF,R4
+  RET
+  
+msp430_end:

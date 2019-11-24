@@ -1,0 +1,447 @@
+
+cordic_begin:
+    ;Two loop version adding each entry 9 times
+
+    ;Different?
+      ;http://www.voidware.com/cordic.htm
+      ;THIS LISTS LIMITS!
+    ;Small angle testing for trig?
+      ;https://www.youtube.com/watch?v=AfL6tV5uQ0U&index=9&list=UUodkWGv9QuNpqSU30gorNFw
+    ;Start over using base 10 rather than halving like above
+      ;https://web.archive.org/web/20080123201428/http://www.jacques-laporte.org/TheSecretOfTheAlgorithms.htm
+    ;C source that was very helpful
+      ;https://people.sc.fsu.edu/~jburkardt/c_src/cordic/cordic.c
+    
+    ;CONSTRAIN TO 45! sin(x)=cos(90-x) but check
+    
+    ;R4 - comparison mode (0 for tan, 1 for atan)
+      ;If 0, sub when Z>0
+      ;If 1, add when Y>0
+    ;R5 - X
+    ;R6 - Y
+    ;R7 - Z
+    ;REMOVED: R8 - dest
+    CordicBCD:
+      ;BeginLocal 5
+      BeginLocal 4
+      ;DefLocal CordicBCD_dest          ;Don't know whether we're after X or Y
+      DefLocal CordicBCD_comp_mode
+      DefLocal CordicBCD_XY_sign        ;high byte is X
+      DefLocal CordicBCD_Z_sign
+      DefLocal CordicBCD_shortcut
+      
+      MOV R4,CordicBCD_comp_mode
+      ;MOV R8,CordicBCD_dest
+      MOV #0,CordicBCD_XY_sign
+      MOV #0,CordicBCD_Z_sign
+      
+      ;copy16 - R5 to R9
+      ADD #2,R5
+      MOV #trig_X,R9
+      CALL #func_copy16
+      
+      MOV R6,R5
+      ADD #2,R5
+      MOV #trig_Y,R9
+      CALL #func_copy16
+      
+      MOV R7,R5
+      ADD #2,R5
+      MOV #trig_Z,R9
+      CALL #func_copy16
+      
+      ;R4 - whether to add or subtract
+      ;R6 - 0x6666???
+      ;R7 - shift count
+      ;R13 - pointer into atan table
+      ;R14 - inner loop counter
+      ;R15 - free
+      
+      MOV #TrigTable,R13                ;Pointer into atan table
+      MOV #0,R7                         ;Shift count
+      CordicBCD_loop_outer:
+        MOV #9,R14                      ;inner counter: 0-9
+        ;MOV #0,CordicBCD_shortcut       ;no shortcut yet
+        CordicBCD_loop_inner:
+          ;CMP #1,CordicBCD_shortcut
+          ;JNE CordicBCD_no_skip_Z_adjust
+            ;XOR #1,R4
+            ;JMP CordicBCD_skip_Z_adjust
+          CordicBCD_no_skip_Z_adjust:
+            TST CordicBCD_comp_mode
+            ;If 0, sub when Z>0
+            ;If 1, add when Y>0
+            JNE CordicBCD_test_Y
+              ;Test Z
+              MOV CordicBCD_Z_sign,R4
+              XOR #1,R4                   ;(add if neg, sub if pos)
+              JMP CordicBCD_test_done
+            CordicBCD_test_Y:
+              ;Test Y
+              MOV.B CordicBCD_XY_sign,R4 ;Sign of Y is low byte
+            CordicBCD_test_done:
+            
+            TST R4
+            ;If 0, add atan to Z
+            ;If 1, sub atan from Z
+            JNE CordicBCD_sub_atan
+              CLRC
+              ;add16 - R9 to R12
+              MOV R13,R9
+              MOV #trig_Z,R12
+              CALL #func_add16
+              MOV SR,R12
+              AND #1,R12
+              ;This is carry but need to read Z sign from last time too
+                ;If adding to negative (2's comp), is correction even necessary?
+                ; -5 + 10 = 9995 + 10 = 5 (C=1)
+                ; -5 + 2 = 9995 + 2 = 9997 = -3 (C=0)
+                ;If adding to positive
+                ; 5 + 10 = 15 (C=0)
+                  ;If C=1, something is very wrong
+              TST CordicBCD_Z_sign
+              JNE CordicBCD_Z_was_neg
+                TST R12      ;Prob not necessary but should be no carry
+                JEQ CordicBCD_no_overflow
+                  BR Error_TrigBCD_overflow
+                CordicBCD_no_overflow:
+                MOV #0,CordicBCD_Z_sign     ;Result positive
+                JMP CordicBCD_Z_done
+              CordicBCD_Z_was_neg:
+                XOR #1,R12                   ;Flip sign
+                MOV R12,CordicBCD_Z_sign
+                JMP CordicBCD_Z_done
+            CordicBCD_sub_atan:
+              MOV R13,R5                     ;Pointer into atan table
+              MOV #trig_Z,R9                 ;Index into dest
+              CALL #func_sub16_keep
+              ; -5 + -5 = -10 = -9990 (C=1)
+                ;If C not set and both neg, error
+              ; 10 + -5 = 10 + 9995 = 5 (C=1)
+              ; 2 + -5 = 2 + 9995 = 9997 = -3 (C=0)
+              TST CordicBCD_Z_sign
+              JEQ CordicBCD_Z_was_pos
+               TST R12      ;Prob not necessary but should be no carry
+                JNE CordicBCD_no_underflow
+                  BR Error_TrigBCD_underflow
+                CordicBCD_no_underflow:
+                MOV #1,CordicBCD_Z_sign     ;Result positive
+                JMP CordicBCD_Z_done
+              CordicBCD_Z_was_pos:
+                XOR #1,R12                  ;Flip sign
+                MOV R12,CordicBCD_Z_sign
+                JMP CordicBCD_Z_done
+            CordicBCD_Z_done:
+          CordicBCD_skip_Z_adjust:
+          
+          MOV CordicBCD_XY_sign,R9
+          SWPB R9
+          MOV.B R9,R9           ;Sign of X
+          MOV #trig_X,R5
+          MOV #trig_shifted_X,R8
+          CALL #func_shift10
+          
+          MOV.B CordicBCD_XY_sign,R9
+          MOV #trig_Y,R5
+          MOV #trig_shifted_Y,R8
+          CALL #func_shift10
+          
+          ;If R4=1
+            ;just subbed so sub Y, add X
+              ;rather than shortcut, see what happens if sub neg for example
+          ;If R4=0
+            ;just added so add Y, sub X
+              ;rather than shortcut, see what happens if sub neg for example
+          TST R4
+          JEQ CordicBCD_addY_subX
+            ;R4=1
+            ;just subbed so sub Y, add X
+            MOV #trig_shifted_Y,R5
+            MOV #trig_X,R9
+            CALL #func_sub16_destroy
+            ;Handle carry
+            MOV SR,R9
+            AND #1,R9
+            MOV CordicBCD_XY_sign,R10
+            MOV.B R10,R11 ;sign of Y
+            SWPB R10
+            MOV.B R10,R10 ;sign of X
+
+            MOV #0,R5             ;Result
+            MOV R9,R12            ;C
+            ADD R10,R12           ;X sign
+            ADD R11,R12           ;Y sign
+            AND #1,R12            ;even or odd?
+            JNE CordicBCD_X_pos
+              MOV #0x100,R5       ;X sign neg
+            CordicBCD_X_pos:
+            ;NO ERROR CHECK!
+            
+            MOV #trig_shifted_X,R9
+            MOV #trig_Y,R12
+            CLRC
+            CALL #func_add16
+
+            AND #1,R9
+            MOV R9,R12            ;C
+            ADD R10,R12           ;X sign
+            ADD R11,R12           ;Y sign
+            AND #1,R12            ;even or odd?
+            JEQ CordicBCD_Y_pos
+              BIS #1,R5           ;Result from above
+            CordicBCD_Y_pos:
+            
+            MOV R5,CordicBCD_XY_sign
+            
+            JMP CordicBCD_addsub_done
+          CordicBCD_addY_subX:
+            ;R4=0
+            ;just added so add Y, sub X
+
+            MOV #trig_shifted_X,R5
+            MOV #trig_Y,R9
+            CALL #func_sub16_destroy
+            ;Handle carry
+            MOV SR,R9
+            AND #1,R9
+            MOV CordicBCD_XY_sign,R10
+            MOV.B R10,R11 ;sign of Y
+            SWPB R10
+            MOV.B R10,R10 ;sign of X
+
+            MOV #0,R5             ;Result
+            MOV R9,R12            ;C
+            ADD R10,R12           ;X sign
+            ADD R11,R12           ;Y sign
+            AND #1,R12            ;even or odd?
+            JNE CordicBCD_Y_pos_2
+              ;MOV #0x100,R5       ;X sign neg
+              MOV #1,R5           ;Y sign neg
+            CordicBCD_Y_pos_2:
+            ;NO ERROR CHECK!
+            
+            MOV #trig_shifted_Y,R9
+            MOV #trig_X,R12
+            CLRC
+            CALL #func_add16
+
+            MOV SR,R9
+            AND #1,R9
+            MOV R9,R12            ;C
+            ADD R10,R12           ;X sign
+            ADD R11,R12           ;Y sign
+            AND #1,R12            ;even or odd?
+            JEQ CordicBCD_X_pos_2
+              ;BIS #1,R5           ;Result from above
+              BIS #0x100,R5       ;Result from above
+            CordicBCD_X_pos_2:
+            
+            MOV R5,CordicBCD_XY_sign
+            
+          CordicBCD_addsub_done:
+          DEC R14
+          JNE CordicBCD_loop_inner
+        ADD #16,R13                       ;Pointer into atan table
+        INC R7                            ;Shift count
+        CMP #0xFFFF,0(R13)                ;End word
+        JNE CordicBCD_loop_outer
+      
+      
+      CordicBCD_done:
+      ;JMP $
+    
+      EndLocal
+    RET
+    
+    
+    ;R6 - angle
+    ;Clobbers R4-R13?
+    ;Returns in trig_mod_buff2
+    ConditionCordic:
+      ;Replaced local result_info with R15
+      ;BeginLocal 1
+      ;DefLocal result_info
+      
+      MOV #Const_raw_360,R4
+      MOV #stack_X,R5   
+      MOV #trig_mod_buff,R6
+      CALL #ModBCD                      ;Mod 360. Result always positive!
+      TST R4
+      JEQ ConditionCordic_no_mod_error
+        MOV #CC_MOD_FAILED,R4
+        JMP ConditionCordic_done
+      ConditionCordic_no_mod_error:
+        
+      ;Mod successful
+      ;Now constrain to 90 degrees and record info
+      
+      ;No need to subtract yet. Expand decimal in preparation for CORDIC
+      MOV &trig_mod_buff,R8
+      ;No sign bit since always positive after mod
+      RLA R8                            ;Extend sign of exponent
+      RRA R8
+      
+      ;*****UNCHECKED*****
+      ;If R7 < -29? -28?, return 0
+      CMP #-29,R8
+      JGE ConditionCordic_not_ret_0
+        ;Return 0
+        MOV #CC_ZERO,R4
+        JMP ConditionCordic_done
+      ConditionCordic_not_ret_0:
+            
+      CMP #1,R8         ;Exponent of argument
+      JGE ConditionCordice_exp_not_0
+        ;Exp 0 or negative
+        ;MOV #0,result_info
+        MOV #0,R15
+        JMP ConditionCordic_adjust_shift_back
+      ConditionCordice_exp_not_0:
+      CMP #2,R8
+      JEQ ConditionCordice_exp_not_1
+        ;Exp 1
+        ;MOV #0,result_info
+        MOV #0,R15
+        CMP #0x9000,&trig_mod_buff+16
+        JNC ConditionCordic_adjust_shift_back          ;0-90
+        ;MOV #1,result_info
+        MOV #1,R15
+        SETC
+        DADD #0x0999,&trig_mod_buff+16          ;Subtract 90 degrees
+        JMP ConditionCordic_adjust_shift_back          ;90-100
+      ConditionCordice_exp_not_1:
+      ;Exp 2
+      ;MOV #1,result_info
+      MOV #1,R15
+      SETC
+      DADD #0x9099,&trig_mod_buff+16            ;Subtract 90 degrees
+      CMP #0x0900,&trig_mod_buff+16
+      JNC ConditionCordic_adjust_shift_forward         ;100-180
+      
+      ;MOV #2,result_info
+      MOV #2,R15
+      SETC
+      DADD #0x9099,&trig_mod_buff+16            ;Subtract 90 degrees
+      CMP #0x0900,&trig_mod_buff+16
+      JNC ConditionCordic_adjust_shift_forward         ;180-270
+      
+      ;MOV #3,result_info                        ;270-360
+      MOV #3,R15
+      SETC
+      DADD #0x9099,&trig_mod_buff+16            ;Subtract 90 degrees
+      
+      ;Shift forward if exp=2
+      ConditionCordic_adjust_shift_forward:
+      MOV #0,R7                                 ;Pointer to num data
+      MOV #0,R8                                 ;Shifted out bits
+      MOV #0,R9                                 ;ORed in bits (shifted out last iteration)
+      MOV #8,R10                                ;Shift 8 words
+      
+      ConditionCordic_shift_forward_loop:
+        MOV trig_mod_buff+2(R7),R11
+        RLA R11
+        RLC R8
+        RLA R11
+        RLC R8
+        RLA R11
+        RLC R8
+        RLA R11
+        RLC R8
+        BIS R9,R11
+        MOV R11,trig_mod_buff2(R7)
+        MOV R8,R9
+        MOV #0,R8
+        ADD #2,R7
+        DEC R10
+      JNE ConditionCordic_shift_forward_loop
+      
+      JMP ConditionCordic_adjust_done
+      
+      ;Shift back if exp 0 or less or copy if 1
+      ConditionCordic_adjust_shift_back:
+      
+      ;Source must be 0-90 by now!
+      MOV #1,R7
+      SUB R8,R7
+      
+      ;div_buff_shifted1 = trig_mod_buff2, 9 words
+      ;should be fine as long as not used by CORDIC
+      MOV #trig_mod_buff+2,R5           ;Source
+      ;MOV #3,R7                         ;Shift count (set above)
+      MOV #trig_mod_buff2,R8            ;Dest
+      MOV #0,R9                         ;Positive number
+      CALL #func_shift10
+      
+      ConditionCordic_adjust_done:
+        
+      ;BIT #1,result_info                ;90-180 or 270-360 requires 90-x adjustment
+      BIT #1,R15                        ;90-180 or 270-360 requires 90-x adjustment
+      JNC ConditionCordic_no_90_adjust
+        MOV #trig_mod_buff2,R7
+        MOV #7,R8
+        MOV #1,R10
+        ConditionCordic_90_adjust_loop:
+          MOV @R7+,R9
+          ADD #0x6666,R9
+          INV R9
+          CLRC
+          BIS R10,SR
+          DADD #0,R9
+          MOV SR,R10
+          AND #1,R10
+          MOV R9,-2(R7)
+          DEC R8
+        JNE ConditionCordic_90_adjust_loop
+        
+        MOV @R7,R9
+        ADD #0x6666,R9
+        INV R9
+        CLRC
+        BIS R10,SR
+        DADD #0x9000,R9                    ;Subtract from 90
+        MOV R9,0(R7)
+      ConditionCordic_no_90_adjust:
+      
+      MOV #CC_SUCCESS,R4
+      
+      ConditionCordic_done:
+      ;EndLocal
+    RET
+    
+    
+    TrigTable:
+    DW 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x4500
+    DW 0x8234, 0x8134, 0x6958, 0x2512, 0x9964, 0x1374, 0x0593, 0x0571
+    DW 0x9046, 0x2247, 0x8414, 0x5926, 0x8348, 0x6976, 0x2938, 0x0057
+    DW 0x4019, 0x7537, 0x9970, 0x0608, 0x1450, 0x7604, 0x7295, 0x0005
+    DW 0x3396, 0x4393, 0x0312, 0x9639, 0x3220, 0x5779, 0x5729, 0x0000
+    DW 0x0023, 0x9810, 0x6155, 0x1724, 0x9511, 0x9577, 0x0572, 0x0000
+    DW 0x7138, 0x8362, 0x2222, 0x3063, 0x7951, 0x2957, 0x0057, 0x0000
+    DW 0x6644, 0x8908, 0x2129, 0x1308, 0x7795, 0x7295, 0x0005, 0x0000
+    DW 0x9388, 0x8966, 0x8231, 0x5130, 0x5779, 0x5729, 0x0000, 0x0000
+    DW 0x7699, 0x2085, 0x0823, 0x9513, 0x9577, 0x0572, 0x0000, 0x0000
+    DW 0x7660, 0x3208, 0x3082, 0x7951, 0x2957, 0x0057, 0x0000, 0x0000
+    DW 0x8767, 0x2320, 0x1308, 0x7795, 0x7295, 0x0005, 0x0000, 0x0000
+    DW 0x0876, 0x8232, 0x5130, 0x5779, 0x5729, 0x0000, 0x0000, 0x0000
+    DW 0x2087, 0x0823, 0x9513, 0x9577, 0x0572, 0x0000, 0x0000, 0x0000
+    DW 0x3208, 0x3082, 0x7951, 0x2957, 0x0057, 0x0000, 0x0000, 0x0000
+    DW 0x2320, 0x1308, 0x7795, 0x7295, 0x0005, 0x0000, 0x0000, 0x0000
+    DW 0x8232, 0x5130, 0x5779, 0x5729, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x0823, 0x9513, 0x9577, 0x0572, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x3082, 0x7951, 0x2957, 0x0057, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x1308, 0x7795, 0x7295, 0x0005, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x5130, 0x5779, 0x5729, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x9513, 0x9577, 0x0572, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x7951, 0x2957, 0x0057, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x7795, 0x7295, 0x0005, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x5779, 0x5729, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x9577, 0x0572, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x2957, 0x0057, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x7295, 0x0005, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x5729, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x0572, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x0057, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0x0005, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+    DW 0xFFFF ;Stop looping when get to here
+
+cordic_end:

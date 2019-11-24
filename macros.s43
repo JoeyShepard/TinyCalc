@@ -1,0 +1,44 @@
+BeginLocal      MACRO word_count;, fp ;even macros are broken!
+                EVEN
+                SUB #word_count*2,SP
+                PUSH #word_count*2
+                ;MOV SP,fp
+local_offset    SET 2      ;Word after word count on stack
+;local_fp        SET fp
+                ENDM
+  
+EndLocal        MACRO
+                EVEN
+                MOV R4,&LocalScratch
+                POP R4
+                ADD R4,SP
+                MOV &LocalScratch,R4
+                ENDM
+
+DefLocal        MACRO varname
+                ;Necessary since local_offset won't resolve (ie IAR is shit)
+                IF local_offset=2
+                  #define varname 2(SP)
+                ELIF local_offset=4
+                  #define varname 4(SP)
+                ELIF local_offset=6
+                  #define varname 6(SP)
+                ELIF local_offset=8
+                  #define varname 8(SP)
+                ELIF local_offset=10
+                  #define varname 10(SP)
+                ELIF local_offset=12
+                  #define varname 12(SP)
+                ELIF local_offset=14
+                  #define varname 14(SP)
+                ELIF local_offset=16
+                  #define varname 16(SP)
+                ENDIF
+local_offset SET local_offset+2
+                ENDM
+
+DefLocalNew     MACRO varname
+                ;DEFINE varname local_offset(local_fp)
+                DEFINE varname local_offset(SP)
+local_offset SET local_offset+2
+                ENDM

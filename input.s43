@@ -1,0 +1,510 @@
+;KEYBOARD INPUT FUNCTIONS
+;========================
+
+;clear_input
+  ;R4-R7 - clobbered
+
+;get_input
+  ;R4 is key pressed to start input
+  ;R4-R11 - clobbered
+  ;Returns in R4 (see return codes)
+
+input_begin:
+
+;INPUT FUNCTION FLAGS
+;====================
+INPUT_NEG =     (1<<0)      ;Sign of input
+INPUT_EXP =     (1<<1)      ;Whether exponent entered yet
+INPUT_DEC =     (1<<2)      ;Whether decimal entered yet
+INPUT_ENEG =    (1<<3)      ;Sign of exponent
+
+;INPUT PROCESSING FLAGS
+;======================
+FLAG_EXP =      (1<<0)
+FLAG_DEC =      (1<<1)
+FLAG_ZERO =     (1<<2)
+
+;OTHER CONSTANTS
+;===============
+INPUT_WIDTH =   21           ;Characters of input to show
+DIGIT_COUNT =   32           ;Max digits enterable
+EXP_COUNT =     4            ;Max exponent digits
+;BLINK_RATE =    15           ;400/12,000hz*15=500ms
+BLINK_RATE =    60           ;100/12,000hz*60=500ms
+
+;RETURN VALUES
+;=============
+INPUT_SUCCESS =         0
+
+;R4-R7 - clobbered
+clear_input:
+  MOV #3,R6
+  CALL #LCD_row
+  MOV #0,R6
+  CALL #LCD_column
+  MOV #128,R6
+  get_input_clear_loop:
+    MOV #0,R4
+    CALL #LCD_data_out
+    DEC R6
+    JNE get_input_clear_loop
+  MOV #3,R6
+  CALL #LCD_row
+  MOV #0,R6
+  CALL #LCD_column
+  RET
+
+
+;R4-R9 - clobbered
+;Returns in R4 (see return codes)
+get_input:
+  BeginLocal 6
+  DefLocal input_flags
+  DefLocal num_len                      ;digits in number
+  DefLocal exp_len                      ;digits in exponent
+  DefLocal blink_state
+  DefLocal timer_counter
+  DefLocal input_key
+  
+  MOV R4,input_key
+  
+  MOV #3,R9
+  CALL #DrawStack
+
+  MOV #0,R8     ;index into input buffer
+  MOV #~(INPUT_NEG|INPUT_EXP|INPUT_DEC|INPUT_ENEG),input_flags
+  MOV #0,num_len
+  MOV #0,exp_len
+  
+  CALL #clear_input
+  
+  ;Blinking cursor
+  MOV #0,timer_counter
+  MOV.B #0,blink_state
+  MOV #'_',R6
+  CALL #putc_stay
+  
+  ;Skip rescanning key since sometimes misses key
+  ;Load key pressed to get here
+  MOV input_key,R4
+  JMP get_input_key_check
+  
+  get_input_loop:
+    ;Read keys
+    CALL #scankeys
+    MOV #0,R5
+    CALL #getkey
+    get_input_key_check:
+    TST R4
+    JNE get_input_process_keys
+      
+      #ifndef TERMINAL_DEBUG
+      ;Sleep while waiting for key
+        BIS #TACLR, &TA0CTL         ;Reset timer
+        BIC #TAIFG, &TA0CTL         ;Clear interrupt flag
+        BIS #TAIE, &TA0CTL          ;Enable timer
+        BIS #LPM3,SR                ;Low power mode
+        INC timer_counter
+      #endif
+      
+      ;Manage cursor
+      CMP #BLINK_RATE,timer_counter
+      JNE get_input_loop_no_blink
+        TST.B blink_state
+        JEQ get_input_loop_space
+          MOV #'_',R6
+          JMP get_input_loop_space_done
+        get_input_loop_space:
+          MOV #' ',R6
+        get_input_loop_space_done:
+        CALL #putc_stay
+        XOR.B #1,blink_state
+        MOV #0,timer_counter
+      get_input_loop_no_blink:
+      JMP get_input_loop
+      
+    get_input_process_keys:
+    
+    ;Reset cursor for any key
+    MOV #BLINK_RATE-1,timer_counter
+    MOV #1,blink_state
+    
+    ;Backspace
+    CMP #KEY_BACK,R4
+    JNE get_input_not_backspace
+      TST R8                    ;If no input
+      JNE get_input_some_input
+        ;Delete sign
+        BIC #INPUT_NEG,input_flags
+        CALL #get_input_redraw
+        JMP get_input_loop
+      get_input_some_input:
+      ;Set dec flag off
+      CMP.B #'.',(input_buffer-1)(R8)
+      JNE get_input_back_no_dec
+        BIC #INPUT_DEC,input_flags
+      get_input_back_no_dec:
+      ;Set exp flag off
+      CMP.B #'e',(input_buffer-1)(R8)
+      JNE get_input_back_no_exp
+        BIC #INPUT_EXP,input_flags
+        BIC #INPUT_ENEG,input_flags
+      get_input_back_no_exp:
+      CMP.B #'0',(input_buffer-1)(R8)
+      JL get_input_not_num
+      CMP.B #'9'+1,(input_buffer-1)(R8)
+      JGE get_input_not_num
+        ;Delete number
+        BIT #INPUT_EXP,input_flags
+        JEQ get_input_num_no_exp
+          DEC exp_len
+          JMP get_input_not_num
+        get_input_num_no_exp:
+          DEC num_len
+      get_input_not_num:
+      DEC R8
+      CALL #get_input_redraw
+      JMP get_input_loop
+    get_input_not_backspace:
+    
+    ;Sign key
+    CMP #KEY_CHS,R4
+    JNE get_input_not_CHS
+      BIT #INPUT_EXP,input_flags
+      JNE get_input_e_sign
+        XOR #INPUT_NEG,input_flags
+        JMP get_input_e_done
+      get_input_e_sign:
+        XOR #INPUT_ENEG,input_flags
+      get_input_e_done:
+      CALL #get_input_redraw
+      ;Can leave off if ALL calls to redraw junp to main loop
+      JMP get_input_loop
+    get_input_not_CHS:
+    
+    ;Exponent key
+    CMP #KEY_EXP,R4
+    JNE get_input_not_EXP
+      BIT #INPUT_EXP,input_flags        ;If already exponent, skip
+      JNE get_input_loop
+      TST R8                            ;If no input yet, skip
+      JEQ get_input_loop
+      CMP #1,R8                         ;If input only '.', skip
+      JNE get_input_exp_good
+        CMP.B #'.',(input_buffer-1)(R8)
+        JEQ get_input_loop
+      get_input_exp_good:
+      BIS #INPUT_EXP,input_flags
+      JMP get_input_add_char
+    get_input_not_EXP:
+    
+    ;Decimal key
+    CMP #'.',R4
+    JNE get_input_not_dec
+      BIT #INPUT_DEC,input_flags
+      JNE get_input_loop        ;Already have decimal point
+      BIT #INPUT_EXP,input_flags
+      JNE get_input_loop        ;No decimal point in exponent
+      BIS #INPUT_DEC,input_flags
+      TST R8
+      JNE get_input_no_dec_zero
+        MOV.B #'0',&input_buffer
+        INC R8
+      get_input_no_dec_zero:
+      JMP get_input_add_char
+    get_input_not_dec:
+    
+    ;Enter key
+    CMP #KEY_ENTER,R4
+    JNE get_input_not_enter
+      TST R8      ;If no input
+      MOV #INPUT_SUCCESS,R4
+      JEQ get_input_exit
+      JMP get_input_process 
+    get_input_not_enter:
+    
+    ;Number keys
+    CMP #'0',R4
+    JL get_input_not_number
+    CMP #'9'+1,R4
+    JGE get_input_not_number
+    BIT #INPUT_EXP,input_flags
+    JNE get_input_exp_number
+      ;Number is part of number, not exponent
+      CMP #DIGIT_COUNT,num_len
+      JGE get_input_loop
+      CMP #1,R8                         ;If input only 0, skip
+      JNE get_input_not_0_only
+        CMP.B #'0',(input_buffer-1)(R8)
+        JEQ get_input_loop
+      get_input_not_0_only:
+      INC num_len
+      JMP get_input_add_char
+    get_input_exp_number:
+      ;Number is part of exponent
+      CMP #EXP_COUNT,exp_len
+      JGE get_input_loop
+      CMP #'0',R4
+      JNE get_input_exp_num_good
+        TST exp_len
+        JEQ get_input_loop
+      get_input_exp_num_good:
+      INC exp_len
+      JMP get_input_add_char
+    get_input_not_number:
+    
+    ;Function keys
+    MOV #get_input_function_key_table,R5
+    get_input_function_key_loop:
+      MOV @R5+,R6
+      TST R6
+      JEQ get_input_function_key_loop_done
+      CMP R4,R6
+      JNE get_input_function_key_loop
+      MOV R4,&key_input
+    get_input_function_key_loop_done:
+      
+    JMP get_input_loop
+    
+    get_input_function_key_table:
+    DB '+','-','*','/',0
+    EVEN
+    
+  ;R4-R7 free since used for putc and key stuff
+  ;R8 is index to end of input buffer
+  ;R9 is index into X register
+  ;R10 is typed in exponent length
+  
+  get_input_process:
+    ;Zero temp X register
+    MOV #stack_X_temp,R9
+    CALL #func_zero_mem
+    
+    MOV #0,R4           ;Index into input buffer
+    MOV #0,R5           ;Exponent count from number only
+    MOV #0,R6           ;Flags for scanning input (decimal, exp, and nonzero not found)
+    MOV #31,R9          ;Index into X register (by nibble!)
+    MOV #0,R10          ;Typed in exponent
+    
+    get_input_scan_buffer:
+      CMP R4,R8
+      JEQ get_input_scan_done
+      MOV.B input_buffer(R4),R7
+      INC R4
+      
+      ;Decimal point
+      CMP #'.',R7
+      JNE get_input_scan_not_dec
+        BIS #FLAG_DEC,R6
+        JMP get_input_scan_buffer
+      get_input_scan_not_dec:
+      
+      ;Exponent
+      CMP #KEY_EXP,R7
+      JNE get_input_scan_not_exp
+        BIS #FLAG_EXP,R6
+        JMP get_input_scan_buffer
+      get_input_scan_not_exp:
+      
+      ;Numbers
+      CMP #'0',R7
+      JL get_input_scan_not_number
+      CMP #'9'+1,R7
+      JGE get_input_scan_not_number
+      BIT #FLAG_EXP,R6
+      JNE get_input_scan_exp_number
+        ;Digit is part of number
+        CMP #'0',R7
+        JNE get_input_scan_non_zero
+          BIT #FLAG_ZERO,R6
+          JNE get_input_scan_non_zero
+          DEC R5
+          JMP get_input_scan_buffer
+        get_input_scan_non_zero:
+          ;Number added to stack X
+          BIS #FLAG_ZERO,R6
+          BIT #FLAG_DEC,R6
+          JNE get_input_scan_no_exp
+            INC R5
+          get_input_scan_no_exp:
+          BIT #1,R9
+          JEQ get_input_scan_low_nibble
+            ;Write digit to high nibble
+            SUB #'0',R7
+            CLRC
+            RLA R7
+            RLA R7
+            RLA R7
+            RLA R7
+            RRA R9
+            MOV.B R7,stack_X_temp(R9)
+            RLA R9 
+            JMP get_input_scan_buffer
+          get_input_scan_low_nibble:
+            ;Write digit to low nibble
+            SUB #'0',R7
+            RRA R9
+            BIS.B R7,stack_X_temp(R9)
+            RLA R9
+            DEC R9
+            JMP get_input_scan_buffer
+      get_input_scan_exp_number:
+        ;Digit is part of exponent
+        SUB #'0',R7
+        RLA R10
+        ADD R10,R7
+        RLA R10
+        RLA R10
+        ADD R7,R10
+        JMP get_input_scan_buffer
+      get_input_scan_not_number:
+        JMP $   ;Input not e, ., or number, so invalid
+    
+    get_input_scan_done:
+      ;Check flag to see if just zeroes, in which case exponent is irrelevant
+      BIT #FLAG_ZERO,R6
+      JNE get_input_final_not_zero
+        ;Header of 0 means positive number with e of 0
+        MOV #0,R10
+        ;Encode -0 as +0
+        BIC #INPUT_NEG,input_flags
+        JMP get_input_copy_X
+      get_input_final_not_zero:
+      
+      ;Exponent should never be zero but just in case
+      TST R5
+      JNE get_input_final_no_hang
+        ;Should never reach here
+        BR Error_get_input_0_exp
+      get_input_final_no_hang:
+      
+      ;Invert exponent if negative
+      BIT #INPUT_ENEG,input_flags
+      JEQ get_input_no_invert_exp
+        MOV #0,R9
+        SUB R10,R9
+        MOV R9,R10
+      get_input_no_invert_exp:
+      
+      ;Exponent is 1 more than needed if positive (ie 1 if 5.00)      
+      ;Exponent is right if negative
+      TST R5     
+      JL get_input_final_exp_not_pos
+        DEC R5
+      get_input_final_exp_not_pos:
+      
+      ADD R5,R10
+      ;Check for overflow
+      CMP #FLOAT_MAX_EXP+1,R10
+      JL get_input_final_exp_no_overflow
+        MOV #ERROR_EXP_OVERFLOW,R4
+        JMP get_input_exit
+      get_input_final_exp_no_overflow:
+      ;Check for underflow
+      CMP #FLOAT_MIN_EXP,R10
+      JGE get_input_final_exp_no_underflow
+        MOV #ERROR_EXP_UNDERFLOW,R4
+        JMP get_input_exit
+      get_input_final_exp_no_underflow:
+      
+      ;Passed all checks so copy to X
+      get_input_copy_X:
+      
+      CALL #stack_push
+      MOV #stack_X_temp,R5
+      MOV #stack_X+2,R9
+      CALL #func_copy16
+      MOV #stack_X_temp,R5
+      MOV #stack_L+2,R9
+      CALL #func_copy16
+            
+      ;Header word
+      BIC #0x8000,R10
+      BIT #INPUT_NEG,input_flags
+      JEQ get_input_not_neg
+        BIS #0x8000,R10
+      get_input_not_neg:
+
+      MOV R10,&stack_X
+      MOV R10,&stack_L
+      
+      MOV #INPUT_SUCCESS,R4
+    get_input_exit:
+    EndLocal
+  RET
+  
+  ;R4 - character to add
+  get_input_add_char:
+    MOV.B R4,input_buffer(R8)
+    INC R8
+    CALL #get_input_redraw
+    JMP get_input_loop
+  
+  ;R8 - index into input_buffer
+  ;R4-R7,R9-R11 - clobbered
+  get_input_redraw:
+    CALL #clear_input
+        
+    MOV #0,R9
+    POP R10   ;copy of return address so input_timer reference works
+    
+    MOV R8,R11          ;count of characters to print
+    BIT #INPUT_NEG,input_flags
+    JEQ get_input_redraw_no_sign_len
+      INC R11
+    get_input_redraw_no_sign_len:
+    
+    BIT #INPUT_ENEG,input_flags
+    JEQ get_input_redraw_no_esign_len
+      INC R11
+    get_input_redraw_no_esign_len:
+    
+    CMP #INPUT_WIDTH,R11
+    JL get_input_redraw_no_adjust
+      MOV R8,R9
+      SUB #INPUT_WIDTH-2,R9
+      BIT #INPUT_ENEG,input_flags
+      JEQ get_input_redraw_no_esign
+        INC R9
+      get_input_redraw_no_esign:
+      MOV #CUST_ARROW,R6
+      CALL #putc
+    get_input_redraw_no_adjust:
+    
+    BIT #INPUT_NEG,input_flags
+    JEQ get_input_redraw_no_sign
+      TST R9
+      JNE get_input_redraw_no_sign
+        MOV #'-',R6
+        CALL #putc
+    get_input_redraw_no_sign:
+
+    get_input_redraw_loop:
+      CMP R8,R9
+      JEQ get_input_redraw_done
+      MOV.B input_buffer(R9),R6
+      CMP #'e',R6
+      JNE get_input_redraw_no_e
+        MOV #CUST_EE,R6
+        CALL #putc
+        BIT #INPUT_ENEG,input_flags
+        JEQ get_input_redraw_e_drawn  
+          MOV #'-',R6
+          CALL #putc
+          JMP get_input_redraw_e_drawn
+      get_input_redraw_no_e:
+      CALL #putc
+      get_input_redraw_e_drawn:
+      INC R9
+      JMP get_input_redraw_loop
+    get_input_redraw_done:
+    
+    MOV #0,timer_counter
+    MOV.B #0,blink_state
+    MOV #'_',R6
+    CALL #putc_stay
+    BR R10
+    ;RET
+    
+input_end:
+  

@@ -1,0 +1,230 @@
+;ERROR VECTORS, CODES, AND FUNCTIONS
+;===================================
+
+error_begin:
+
+;CONSTANTS
+;=========
+ERROR_NONE =            0       ;All successful functions should return 0
+ERROR_EXP_OVERFLOW =    1
+ERROR_EXP_UNDERFLOW =   2
+ERROR_DIV_ZERO =        3
+ERROR_STACK_OVERFLOW =  4
+
+;ERROR FUNCTIONS
+;===============
+
+;R4 is error code
+;R4-R10 clobbered
+error_msg:
+  #ifdef TERMINAL_DEBUG
+    MOV #'E',R12
+    CALL #?C_PUTCHAR
+    MOV R4,R12
+    ADD #'0',R12
+    CALL #?C_PUTCHAR
+    RET
+  #endif
+
+  RLA R4
+  CMP #(ERROR_MAX-error_msg_table),R4
+  JL error_msg_good
+    MOV #ERROR_3,R4
+  error_msg_good:
+  MOV error_msg_lookup(R4),R4
+  PUSH R4
+  MOV @R4,R6            ;Characters to print
+  CALL #error_msg_box
+  MOV #1,R6
+  CALL #LCD_row
+  MOV R8,R6
+  CALL #LCD_column
+  POP R4
+  MOV R4,R8
+  ADD #2,R8
+  CALL #puts
+  
+  error_msg_box_sleep:
+  BIS #TACLR, &TA0CTL         ;Reset timer
+  BIC #TAIFG, &TA0CTL         ;Clear interrupt flag
+  BIS #TAIE, &TA0CTL          ;Enable timer
+  BIS #LPM3,SR                ;Low power mode
+  
+  CALL #scankeys
+  MOV #0,R5
+  CALL #getkey
+  CMP #KEY_ENTER,R4
+  JNE error_msg_box_sleep
+  
+  RET
+  
+  error_msg_lookup:
+  DC16 ERROR_0, ERROR_1, ERROR_2, ERROR_3, ERROR_4, ERROR_5
+  
+  error_msg_table:
+  ERROR_0:
+    DC16 6
+    DB "(none)"
+    EVEN
+  ERROR_1:
+    DC16 9
+    DB "Overflow!"
+    EVEN
+  ERROR_2:
+    DC16 10
+    DB "Underflow!"
+    EVEN
+  ERROR_3:
+    DC16 15
+    DB "Divide by zero!"
+    EVEN
+  ERROR_4:
+    DC16 14
+    DB "Stack overflow"
+    EVEN
+  ERROR_5:
+    DC16 14
+    DB "Unknown error!"
+    EVEN
+  ERROR_MAX:
+    
+  ;R6 - count of characters to print
+  ;R4-R9 - clobbered
+  ;R8 returns X coordinate for printing string
+  error_msg_box:
+    MOV R6,R7
+    RLA R6
+    ADD R7,R6
+    MOV R6,R7
+    RLA R7              ;R7 is pixels of border
+    MOV #64,R8          ;X coord for text
+    SUB R6,R8
+    MOV R8,R9           ;X coord for border
+    SUB #6,R9
+    
+    MOV #0,R6
+    CALL #LCD_row
+    MOV R9,R6
+    CALL #LCD_column
+    
+    MOV #6,R6
+    error_msg_box_loop1:
+      MOV.B (error_msg_NW_box-1)(R6),R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop1
+    
+    ;Top line
+    MOV R7,R6
+    error_msg_box_loop2:
+      ;MOV #0x3C,R4
+      MOV #0x18,R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop2
+    
+    MOV #6,R6
+    error_msg_box_loop3:
+      MOV.B (error_msg_NE_box-1)(R6),R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop3
+    
+    MOV #1,R6
+    CALL #LCD_row
+    MOV R9,R6
+    CALL #LCD_column
+    
+    MOV #6,R6
+    error_msg_box_loop4:
+      MOV.B (error_msg_W_box-1)(R6),R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop4
+    
+    MOV R8,R6
+    ADD R7,R6
+    CALL #LCD_column
+    
+    MOV #6,R6
+    error_msg_box_loop5:
+      MOV.B (error_msg_E_box-1)(R6),R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop5
+    
+    MOV #2,R6
+    CALL #LCD_row
+    MOV R9,R6
+    CALL #LCD_column
+    
+    MOV #6,R6
+    error_msg_box_loop6:
+      MOV.B (error_msg_SW_box-1)(R6),R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop6
+    
+    ;Bottom line
+    MOV R7,R6
+    error_msg_box_loop7:
+      ;MOV #0x3C,R4
+      MOV #0x18,R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop7
+    
+    MOV #6,R6
+    error_msg_box_loop8:
+      MOV.B (error_msg_SE_box-1)(R6),R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE error_msg_box_loop8    
+          
+    RET
+    
+  error_msg_NW_box:
+    ;DB 60,62,63,63,31,15
+    DB 0x18,0x18,0x1F,0x1F,0,0
+  error_msg_NE_box:
+    ;DB 15,31,63,63,62,60
+    DB 0,0,0x1F,0x1F,0x18,0x18
+  error_msg_W_box:
+    ;DB 0,0,0xFF,0xFF,0xFF,0xFF
+    DB 0,0,0xFF,0xFF,0,0
+  error_msg_E_box:
+    ;DB 0xFF,0xFF,0xFF,0xFF,0,0
+    DB 0,0,0xFF,0xFF,0,0
+  error_msg_SW_box:
+    ;DB 60,124,252,252,248,240
+    DB 0x18,0x18,0xF8,0xF8,0,0
+  error_msg_SE_box:
+    ;DB 240,248,252,252,124,60
+    DB 0,0,0xF8,0xF8,0x18,0x18
+  
+;ERROR VECTORS
+;=============
+
+;TODO: Replace with meaningful error handling
+  ;(Actually vectors shouldnt be needed. Returns values should handle everything)
+Error_FallThrough:      ;Got here falling through from directly above
+  JMP $
+Error_AddBCD_overflow:
+  JMP $
+Error_SubBCD_overflow:
+  JMP $
+Error_MultBCD_overflow:
+  JMP $
+Error_MultBCD_underflow:
+  JMP $
+Error_TrigBCD_overflow:
+  JMP $
+Error_TrigBCD_underflow:
+  JMP $
+Error_get_input_0_exp:
+  JMP $
+Error_ModBCD_underflow:
+  JMP $
+ 
+error_end:
+  

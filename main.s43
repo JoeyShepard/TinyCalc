@@ -1,0 +1,738 @@
+//#define TERMINAL_DEBUG
+#define CHECK_STACK
+
+#include "msp430.h"                     ; #define controlled include file
+        
+  #define MHZ_8
+  #ifdef MHZ_1
+    #define BC_CONST CALBC1_1MHZ
+    #define DCO_CONST CALDCO_1MHZ
+    #define DELAY_TIME 1000
+  #elif defined MHZ_8
+    #define BC_CONST CALBC1_8MHZ
+    #define DCO_CONST CALDCO_8MHZ
+    #define DELAY_TIME 8000
+  #elif defined MHZ_16
+    #define BC_CONST CALBC1_16MHZ
+    #define DCO_CONST CALDCO_16MHZ
+    #define DELAY_TIME 16000
+  #endif
+  
+  #define BTN_SENSE1          BIT0  //P1.0 Button row out
+  #define BTN_SENSE2          BIT1  //P1.1 Button row out
+  #define BTN_SENSE3          BIT2  //P1.2 Button row out
+  #define BTN_SENSE4          BIT3  //P1.3 Button row out
+  #define BTN_SENSE5          BIT4  //P1.4 Button row out
+  
+  #define IO_CLOCK            BIT5  //P1.5 IO clock
+  #define BTN_SENSE6          BIT6  //P1.6 Button row out
+  #define IO_MOSI             BIT7  //P1.7 IO data in
+  
+  #define BTN_SINK1           BIT0  //P2.0 Button row in
+  #define BTN_SINK2           BIT1  //P2.1 Button row in
+  #define BTN_SINK3           BIT2  //P2.2 Button row in
+  
+  #define LCD_A0              BIT3  //P2.3 LCD A0
+  #define LCD_RST             BIT4  //P2.4 LCD Reset
+  #define LCD_CS              BIT5  //P2.5 LCD CS
+  
+  #define BTN_SINK4           BIT6  //P2.6 Button row in
+  #define BTN_SINK5           BIT7  //P2.7 Button row in
+  
+  
+  NAME    main                    ; module name
+
+  PUBLIC  main                    ; make the main label visible
+                                  ; outside this module
+          
+  ORG     0FFF0h
+  DC16    TA0_ISR
+  ORG     0FFFCh
+  DC16    NMI_ISR  
+  ORG     0FFFEh
+  DC16    init                    ; set reset vector to 'init' label
+  
+  ;****************
+  ;GLOBAL VARIABLES
+  ;****************
+  ORG     0x0200                  ;IAR is shitty and RSEG DATA doesn't work!
+
+ram_begin:
+  #ifdef CHECK_STACK
+    stack_canary_copy:  DS16 1
+  #endif
+  ;Alternative is 4 bytes: 1 for which modifier+1 debouncer, 1 for key+1 debouncer
+  keys_down:            DS8 30
+  ;in pixels (5x8 font so every charcter adds 6)
+  screen_column:        DS8 1
+  EVEN
+  LocalScratch:         DS16 1   ;Used for macros
+  stack_count:          DS16 1
+  key_input:            DS16 1   ;Extra key of input if function key pressed during input
+
+  add_shift_buff:         ;NOTE: uses next 9 words
+  input_buffer:           ;NOTE: uses next 39 bytes!
+    ;max numbers+.+sign+EE+exponent = 32+.+e+5 = 39
+  mult_result:            ;NOTE: uses next 16 words!    
+  div_numerator:          ;NOTE: uses next 17 words!
+  trig_X:                 ;Only next 8 words
+  log_X:                  ;Only next 8 words
+  e_X:                    ;Only next 8 words
+                        DS16 8
+  trig_Y:                 ;Only next 8 words
+  log_shifted:            ;Only next 8 words
+  e_shifted:              ;Only next 8 words
+                        DS16 8
+  div_numerator_17th:
+                        DS16 1            ;Added late for ModBCD. May interfere with other funcitons!!!
+  trig_mod_buff:                          ;Only next 9 words
+                        DS16 1
+  mult_carry_buff:  
+  log_result:                             ;Only next 8 words
+  trig_Z:                                 ;Only next 8 words
+  e_result:                               ;Only next 8 words
+  
+                        DS16 8                          
+  stack_X_temp:                           ;Only next 8 words
+  trig_goal_buff:                         ;Only next 8 words
+  trig_shifted_X:                        
+                        DS16 8                           
+  mult_buff1:
+  div_buff1:
+  trig_shifted_Y:
+                        DS16 8            ;8 words for op1
+  mult_buff2:
+  div_buff2:            DS16 8            ;8 words for op2
+  div_buff_shifted1:    
+  trig_mod_buff2:                         ;Only next 9 words
+                        DS8 18            ;17 bytes with extra for word alignment
+  div_buff_shifted2:    DS8 18            ;17 bytes with extra for word alignment
+  temp_result:          DS16 9
+  stack_X:              DS16 9
+  stack_Y:              DS16 9
+  stack_Z:              DS16 9
+  stack_T:              DS16 9
+  stack_L:              DS16 9
+  mem0:                 DS16 9
+  mem1:                 DS16 9
+  mem2:                 DS16 9
+  mem3:                 DS16 9
+  mem4:                 DS16 9
+  mem5:                 DS16 9
+  mem6:                 DS16 9
+  mem7:                 DS16 9
+  mem8:                 DS16 9
+  mem9:                 DS16 9
+  
+  #ifdef TERMINAL_DEBUG
+    TERM_DEBUG_STATE:   DS16 1
+  #endif
+  #ifdef CHECK_STACK
+    ;Must be last variable
+    stack_canary:   DS16 1
+  #endif
+ram_end:
+  
+  RSEG    CSTACK                  ; pre-declaration of segment
+  RSEG    CODE                    ; place program in 'CODE' segment
+
+  ;*************
+  ;INCLUDE FILES
+  ;*************
+code_begin:
+  #include "macros.s43"           ;This comes first
+  #include "character_table.s43"
+  #include "const.s43"
+  #include "cordic.s43"
+  #include "debug.s43"
+  #include "error.s43"
+  #include "functions.s43"
+  #include "input.s43"
+  #include "keys.s43"
+  #include "LCD.s43"
+  #include "math.s43"
+  #include "msp430.s43"
+  #include "sizes.s43"
+  #include "stack.s43"
+  #include "stack_draw.s43"
+  
+  ;TODO
+  ;====
+  ;Faster SPI clock to save time/battery?
+  ;On/off key
+  ;Check R11=99 thing in SubBCD
+  ;Recheck register use in math.s43 and others since DESCRPITIONS DONT MATCH!!!
+  ;RRA/RRC right in shift10???
+    ;Must be
+  ;Fix underflow in SubBCD
+  ;Crashed after instituted plus and min key
+    ;black bars and scrolling fff which Ive seen before
+  ;Case
+    ;Two halves. screw through axis to hold halves together
+  ;Current consumption
+  ;Could save space by combining similar parts of plus and minus routines
+  ;Bug where 9E-9999+0=0
+  ;Beginning number with 0 leads answer to be 0!
+    ;See saved terminal output 
+    ;Have to try on real calculator
+  ;Hmm, 4/7 - -4/-7 or one of those 4/7 combos resulted in 7e32 :/
+    ;Can't reproduce!
+  ;Retest error handler since rearranged to save space
+  ;Integrity check code after each key
+  ;Test ModBCD when exponents same, no addback, shift forward
+  
+init:
+  MOV     #SFE(CSTACK), SP        ; set up stack
+  
+main:
+  NOP                             ; main program
+  MOV.W   #WDTPW+WDTHOLD,&WDTCTL  ; stop watchdog timer
+    
+  CALL #calc_sizes
+
+  /*
+  MOV #mod_test_X,R5
+  MOV #stack_X,R9
+  CALL #func_copy18
+  MOV #mod_test_Y,R5
+  MOV #stack_Y,R9
+  CALL #func_copy18  
+  
+  MOV #stack_X,R4
+  MOV #stack_Y,R5
+  MOV #temp_result,R6
+  CALL #ModBCD
+  */
+  
+  MOV #sin_test_X,R5
+  MOV #stack_X,R9
+  CALL #func_copy18
+  MOV #1,&stack_count
+  
+  JMP sin_test
+  
+  JMP $
+
+  mod_test_X:
+  ;Denominator
+  DW 0xFFEC, 0x0001, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7000
+  ;DW 0x0010, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7000
+  ;DW 0x0004, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x5000, 0x1234
+  ;DW 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x2000
+  ;DW 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x3500
+  
+  mod_test_Y:
+  ;Numerator
+  DW 0xFFEF, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, 0x4200  
+  ;DW 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000    
+  ;DW 0x0011, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x4567, 0x4123
+  ;DW 0x0008, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x9000, 0x5678, 0x1234
+  ;DW 0x000F, 0x9999, 0x9999, 0x9999, 0x9999, 0x9999, 0x9999, 0x9999, 0x9999
+  ;DW 0x0001, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x9999
+  
+  sin_test_X:
+  ;DW 0x0002, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x7205  ;720.5 = 0.5  
+  ;DW 0x0002, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x3605  ;360.5 = 0.5
+  ;DW 0x0002, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x3650  ;365 = 5
+  ;DW 0x0002, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x4050  ;405 = 45
+  ;DW 0x8002, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x4050  ;-405 = 315 = -45         
+  ;DW 0x0002, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x4567, 0x2823  ;282.34567 = 12.34567
+  DW 0x0001, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x9876  ;98.76 = 90 - 8.76 = 81.24     
+
+  CALL #calc_sizes
+  CALL #setup
+  
+  MOV #4,R9
+  CALL #DrawStack
+  
+  main_loop:
+    #ifdef CHECK_STACK
+      INC &stack_canary
+      INC &stack_canary_copy
+      CMP &stack_canary_copy,&stack_canary
+      JEQ main_canary_good
+        MOV #ERROR_STACK_OVERFLOW,R4
+        CALL #error_msg
+        JMP $
+      main_canary_good:
+    #endif
+  
+    ;Make sure no keys before sleeping
+    CALL #scankeys
+    ;MOV #1,R5                   ;Don't mark key read
+    MOV #0,R5                   ;Mark key as read
+    CALL #getkey
+    
+    TST R4
+    JNE main_process_keys
+    TST &key_input
+    JEQ main_sleep
+      MOV &key_input,R4
+      MOV #0,&key_input
+      JMP main_process_keys
+    main_sleep:
+      ;Sleep while waiting for key
+      BIS #TACLR, &TA0CTL         ;Reset timer
+      BIC #TAIFG, &TA0CTL         ;Clear interrupt flag
+      BIS #TAIE, &TA0CTL          ;Enable timer
+      BIS #LPM3,SR                ;Low power mode
+      JMP main_loop
+    main_process_keys:
+    
+    ;Number keys
+    CMP #'0',R4
+    JL main_not_num_key
+    CMP #'9'+1,R4
+    JGE main_not_num_key
+      main_num_key:
+      CALL #get_input
+      TST R4
+      JEQ main_num_key_success
+        CALL #error_msg
+        JMP main_num_key_done
+      main_num_key_success:
+      
+      main_num_key_done:
+      MOV #4,R9
+      CALL #DrawStack
+      JMP main_loop
+    main_not_num_key:
+    
+    ;Decimal key
+    CMP #'.',R4
+    JEQ main_num_key
+    
+    ;Plus key
+    CMP #'+',R4
+    JNE main_not_plus
+      CMP #2,&stack_count
+      JL main_loop
+      ;Signs of X and Y
+      MOV #0,R4
+      MOV stack_X,R5
+      RLC R5
+      ADDC #0,R4
+      RLC R4    ;If X negative, R4 now 2
+      MOV stack_Y,R5
+      RLC R5
+      ADDC #0,R4
+      
+      ;Common to all four situations
+      MOV #temp_result,R6
+      
+      CMP #0,R4
+      JNE main_plus_key_not_XpYp
+        ;X pos, Y pos
+        MOV #stack_X,R4
+        MOV #stack_Y,R5
+        CALL #AddBCD
+        BIC #0x8000,temp_result
+        JMP main_plus_key_sign_done
+      main_plus_key_not_XpYp:
+      CMP #1,R4
+      JNE main_plus_key_not_XpYn
+        ;X pos, Y neg
+        MOV #stack_X,R4
+        MOV #stack_Y,R5
+        BIC #0x8000,stack_Y     ;Make both positive
+        CALL #SubBCD
+        XOR #0x8000,temp_result ;Account for negating above
+        JMP main_plus_key_sign_done
+      main_plus_key_not_XpYn:
+      CMP #2,R4
+      JNE main_plus_key_not_XnYp
+        ;X neg, Y pos
+        MOV #stack_Y,R4
+        MOV #stack_X,R5
+        BIC #0x8000,stack_X     ;Make both positive
+        CALL #SubBCD
+        XOR #0x8000,temp_result ;Account for negating above
+        JMP main_plus_key_sign_done
+      main_plus_key_not_XnYp:
+      main_plus_key__XnYn:
+        ;X neg, Y neg
+        MOV #stack_X,R4
+        MOV #stack_Y,R5
+        CALL #AddBCD
+        BIS #0x8000,temp_result
+      main_plus_key_sign_done:
+                  
+      ;Return value from AddBCD or SubBCD
+      CALL #process_two_arg
+      JMP main_loop
+    main_not_plus:
+    
+    ;Subtract key
+    CMP #'-',R4
+    JNE main_not_sub
+      CMP #2,&stack_count
+      JL main_loop
+      ;Signs of X and Y
+      MOV #0,R4
+      MOV stack_X,R5
+      RLC R5
+      ADDC #0,R4
+      RLC R4    ;If X negative, R4 now 2
+      MOV stack_Y,R5
+      RLC R5
+      ADDC #0,R4
+      
+      ;Common to all four situations
+      MOV #temp_result,R6
+      
+      CMP #0,R4
+      JNE main_sub_key_not_XpYp
+        ;X pos, Y pos
+          ;SubBCD sets signs properly
+        MOV #stack_X,R4
+        MOV #stack_Y,R5
+        CALL #SubBCD
+        JMP main_sub_key_sign_done
+      main_sub_key_not_XpYp:
+      CMP #1,R4
+      JNE main_sub_key_not_XpYn
+        ;X pos, Y neg
+        MOV #stack_X,R4
+        MOV #stack_Y,R5
+        BIC #0x8000,stack_Y     ;Make both positive
+        CALL #AddBCD
+        BIS #0x8000,temp_result ;Result is always negative
+        JMP main_sub_key_sign_done
+      main_sub_key_not_XpYn:
+      CMP #2,R4
+      JNE main_sub_key_not_XnYp
+        ;X neg, Y pos
+        MOV #stack_X,R4
+        MOV #stack_Y,R5
+        BIC #0x8000,stack_X     ;Make both positive
+        CALL #AddBCD
+        JMP main_sub_key_sign_done
+      main_sub_key_not_XnYp:
+      main_sub_key__XnYn:
+        ;X neg, Y neg
+        BIC #0x8000,stack_X     ;Make both positive
+        BIC #0x8000,stack_Y
+        MOV #stack_Y,R4
+        MOV #stack_X,R5
+        CALL #SubBCD
+      main_sub_key_sign_done:
+      
+      ;Return value from AddBCD or SubBCD
+      CALL #process_two_arg
+      JMP main_loop
+    main_not_sub:
+    
+    ;Multiply key - checked
+    CMP #'*',R4
+    JNE main_not_mult
+      CMP #2,&stack_count
+      JL main_loop
+      
+      MOV #stack_X,R4
+      MOV #stack_Y,R5
+      MOV #temp_result,R6
+      CALL #MultBCD
+      CALL #process_two_arg
+      JMP main_loop
+    main_not_mult:
+      
+    ;Divide key
+    CMP #'/',R4
+    JNE main_not_div
+      CMP #2,&stack_count
+      JL main_loop
+      
+      MOV #stack_X,R4
+      MOV #stack_Y,R5
+      MOV #temp_result,R6
+      CALL #DivBCD
+      CALL #process_two_arg
+      JMP main_loop    
+    main_not_div:
+
+    ;CHS key
+    CMP #KEY_CHS,R4
+    JNE main_not_chs
+      TST &stack_count
+      JEQ main_loop
+        XOR #0x8000,&stack_X
+        MOV #4,R9
+        CALL #DrawStack
+        JMP main_loop
+    main_not_chs:
+
+    ;Enter key
+    CMP #KEY_ENTER,R4
+    JNE main_not_enter
+      TST &stack_count
+      JEQ main_loop
+        CALL #stack_push
+        MOV #4,R9
+        CALL #DrawStack
+        JMP main_loop
+    main_not_enter:
+    
+    ;Backspace key
+    CMP #KEY_BACK,R4
+    JNE main_not_back
+      CALL #stack_drop
+      MOV #4,R9
+      CALL #DrawStack
+      JMP main_loop
+    main_not_back:
+    
+    ;Sin key
+    CMP #KEY_SIN,R4
+    JNE main_not_sin
+      /*
+      CMP #2,&stack_count
+      JL main_loop
+      ;Testing mod here for now
+      ;Needs to work for trig
+      MOV #stack_X,R4
+      MOV #stack_Y,R5
+      MOV #temp_result,R6
+      CALL #ModBCD
+      CALL #process_two_arg
+      */
+      
+      sin_test:         ;DELETE AFTER TEST!!!
+      CMP #1,&stack_count
+      JL main_loop
+      
+      MOV #stack_X,R6
+      CALL #ConditionCordic
+
+      ;*******CHECK RETURN VALUE!!!*******
+
+
+      ;R4 - comparison mode (0 for tan, 1 for atan)
+      ;If 0, sub when Z>0
+      ;If 1, add when Y>0
+      ;R5 - X
+      ;R6 - Y
+      ;R7 - Z
+      
+      MOV #0,R4
+      MOV #TrigK_inv,R5         ;X=1/K
+      MOV #Const_raw_0,R6       ;Y=0
+      MOV #trig_mod_buff2-2,R7  ;Z=angle
+      CALL #CordicBCD
+      
+      ;Return values from CordicBCD
+      CMP #CC_MOD_FAIL
+      JNC main_sin_not_nod_fail
+        ;CC_MOD_FAIL
+
+        ;**********
+
+      main_sin_not_nod_fail:
+      CMP #CC_ZERO
+      JNC main_sin_not_zero
+        ;Angle zero or less than 1E-29 or so, so zero
+        MOV #
+      main_sin_not_zero:
+      CMP #CC_MOD_FAIL
+      JNC main_sin_not_nod_fail
+      main_sin_not_nod_fail:
+      
+      
+      
+      
+      CALL #process_one_arg
+      
+      JMP main_loop
+    main_not_sin:
+    
+    ;Cos key
+    CMP #KEY_COS,R4
+    JNE main_not_cos
+    main_not_cos:
+    
+    ;Tan key
+    CMP #KEY_TAN,R4
+    JNE main_not_tan
+    main_not_tan:
+    
+    ;Menu key
+    CMP #KEY_MENU,R4
+    JNE main_not_menu
+      ;Reverse contrast
+      ;Constrast control
+      
+    main_not_menu:
+    
+    ;Swap key
+    CMP #KEY_SWAP,R4
+    JNE main_not_swap
+    main_not_swap:
+    
+    ;Roll key
+    CMP #KEY_ROLL,R4
+    JNE main_not_roll
+    main_not_roll:
+    
+    ;Sto key
+    CMP #KEY_STO,R4
+    JNE main_not_sto
+    main_not_sto:
+    
+    ;Rcl key
+    CMP #KEY_RCL,R4
+    JNE main_not_rcl
+    main_not_rcl:
+    
+    ;View key
+    CMP #KEY_VIEW,R4
+    JNE main_not_view
+    main_not_view:
+    
+    ;ON/OFF key
+      ;lpm4
+      ;Sleep LCD
+    
+    ;Key not recognized
+    JMP main_loop
+    
+  ;Should not reach here
+  JMP $
+
+process_arg_pre:
+  TST R4
+  JEQ process_arg_pre_success
+    CALL #error_msg
+    MOV #4,R9
+    CALL #DrawStack
+    POP R4      ;Skip returning to caller
+    RET         ;Return instead to caller of caller
+  process_arg_pre_success:
+  MOV #stack_X,R4
+  MOV #stack_Y,R5
+  MOV #temp_result,R6
+  CALL #process_arg_check
+  RET
+
+process_arg_post:
+  MOV #temp_result,R5
+  MOV #stack_X,R9
+  CALL #func_copy18
+  MOV #4,R9
+  CALL #DrawStack
+  RET
+
+process_one_arg:
+  CALL #process_arg_pre
+  CALL #process_arg_post
+  RET
+
+process_two_arg:
+  CALL #process_arg_pre  
+  CALL #stack_drop
+  CALL #process_arg_post
+  RET
+
+;Check for invalid return values
+;Only happens if error in code!
+process_arg_check:
+  ;Check for first byte <10
+  ;If zero, check exponent
+  ;If zero, check for negative exponent
+  ;Check all digits valid BCD
+  
+
+setup:
+  ;Main clock - 8mhz
+  MOV.B BC_CONST,&BCSCTL1
+  MOV.B DCO_CONST,&DCOCTL
+    
+  ;Fill RAM with test value up to stack pointer
+  MOV #0x200,R4
+  setup_deadbeef_loop:
+    MOV #0xCDAB,0(R4)
+    ADD #2,R4
+    CMP R4,SP
+  JNE setup_deadbeef_loop
+  
+  ;Setup stack canary
+  MOV #0xABCD,R4
+  MOV R4,&stack_canary
+  MOV R4,&stack_canary_copy
+  
+  ;SPI peripheral for LCD
+  MOV.B #UCSWRST,&UCB0CTL1
+  MOV.B #(UCCKPH|UCMST|UCSYNC|UCMSB),&UCB0CTL0
+  BIS.B #UCSSEL_2,&UCB0CTL1
+  ;MOV.B #200,&UCB0BR0
+  MOV.B #100,&UCB0BR0
+  MOV.B #0,&UCB0BR1
+  AND.B #(~UCSWRST),&UCB0CTL1
+  
+  ;Port 1 pin assignments
+  MOV.B #0,&P1DIR
+  MOV.B #(BTN_SENSE1|BTN_SENSE2|BTN_SENSE3|BTN_SENSE4|BTN_SENSE5|BTN_SENSE6),&P1OUT
+  MOV.B #(BTN_SENSE1|BTN_SENSE2|BTN_SENSE3|BTN_SENSE4|BTN_SENSE5|BTN_SENSE6),&P1REN
+  MOV.B #(IO_CLOCK|IO_MOSI),&P1SEL
+  MOV.B #(IO_CLOCK|IO_MOSI),&P1SEL2
+  
+  ;Port 2 pin assignments
+  MOV.B #(LCD_A0|LCD_RST|LCD_CS),&P2DIR
+  MOV.B #(LCD_RST|LCD_CS),&P2OUT
+  MOV.B #0,&P2SEL
+  MOV.B #0,&P2SEL2
+  
+  ;LCD initialization
+  MOV #100,R4
+  CALL #delay_ms
+  CALL #LCD_init
+  CALL #LCD_off         ;Necessary???
+  CALL #LCD_on
+  CALL #LCD_clr
+  
+  ;Set ACLK to VLO for low power mode
+  BIS.B #LFXT1S1, &BCSCTL3
+  
+  ;Timer0 wakes up from sleep
+  BIC #MC0|MC1, &TA0CTL		; Turn off timer TA0.
+  BIS #TACLR, &TA0CTL		; Clear the timer TAR.
+  BIS #TASSEL_1, &TA0CTL	; Use ACLK - 12kHz
+  BIC #ID0|ID1, &TA0CTL		; Divide by 1.
+  BIC #TAIFG, &TA0CTL		; Clear the interrupt flag.
+  BIS #MC0, &TA0CTL		; Set timer mode to count to TA0CCR0.
+  BIS #TAIE, &TA0CTL		; Enable timer TA0 interrupts.
+  ;MOV #400, &TA0CCR0		; Period: 400 = 30/second
+    ;Typing feels slow
+  MOV #100, &TA0CCR0		; Period: 100 = 120/second
+  BIS #GIE, SR
+    
+  ;Stack setup
+  MOV #0,&stack_count
+  MOV #0,&stack_L
+  MOV #stack_L+2,R9
+  CALL #func_zero_mem
+  MOV #0,&stack_count
+    
+  ;Key setup
+  CALL #keys_setup
+  MOV #0,&key_input
+  
+  #ifdef TERMINAL_DEBUG
+    MOV #0,&TERM_DEBUG_STATE
+  #endif
+  
+  RET
+  
+;Interrupts
+;==========
+  
+TA0_ISR:
+  BIC #TAIFG, &TA0CTL		;Clear interrupt flag
+  BIC #TAIE, &TA0CTL            ;Turn off timer interrupt
+  BIC #LPM3,0(SP)               ;Exit low power mode
+  RETI
+
+NMI_ISR:
+  ;fill in
+  RETI
+
+code_end:
+  END

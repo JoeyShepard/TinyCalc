@@ -1,0 +1,42 @@
+;FUNCTIONS TO MANIUPLATE STACK
+;=============================
+
+
+stack_begin:
+
+;R5 and R9 clobbered
+stack_push:
+  MOV #stack_Z,R5
+  MOV #stack_T,R9
+  CALL #func_copy18
+  MOV #stack_Y,R5
+  MOV #stack_Z,R9
+  CALL #func_copy18
+  MOV #stack_X,R5
+  MOV #stack_Y,R9
+  CALL #func_copy18
+  INC &stack_count
+  CMP #5,&stack_count
+  JL stack_push_count_good
+    MOV #4,&stack_count
+  stack_push_count_good:
+  RET
+
+stack_drop:
+  TST &stack_count
+  JNE stack_drop_no_exit
+    RET
+  stack_drop_no_exit:
+  MOV #stack_Y,R5
+  MOV #stack_X,R9
+  CALL #func_copy18
+  MOV #stack_Z,R5
+  MOV #stack_Y,R9
+  CALL #func_copy18
+  MOV #stack_T,R5
+  MOV #stack_Z,R9
+  CALL #func_copy18
+  DEC &stack_count
+  RET
+  
+stack_end:

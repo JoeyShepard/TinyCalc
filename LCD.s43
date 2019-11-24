@@ -1,0 +1,298 @@
+;FUNCTIONS FOR New Haven C12832A1Z LCD
+;=====================================
+
+;LCD_clr
+    ;R4,R5,R6,R7 - clobbered
+
+;LCD_comm_out
+    ;R4 - data to send
+    ;R5 - clobbered
+    ;Returns in R4
+
+;LCD_data_out
+    ;R4 - data to send
+    ;R5 - clobbered
+    ;Returns in R4
+
+;LCD_init
+    ;R4,R5,R6 - clobbered
+
+;LCD_off
+    ;R4,R5 - clobbered
+
+;LCD_on:
+    ;R4,R5 - clobbered
+
+;LCD_row
+    ;R6 - row
+    ;R4,R5 - clobbered
+
+;LCD_column
+    ;R6 - column
+    ;R4,R5 - clobbered
+
+;putc
+;putc_inverted
+;putc_stay
+    ;R6 - character
+    ;R4,R5,R7 - clobbered
+
+;putc_hex
+    ;R6 - hex byte to print
+    ;R4,R5,R7 - clobbered
+
+;puts
+;puts_inverted
+    ;R8 - string
+    ;R4,R5,R6,R7 - clobbered
+
+;puts_immed
+;puts_inverted_immed
+    ;R4,R5,R6,R7,R8 - clobbered
+
+LCD_begin:
+
+;R4,R5,R6,R7 - clobbered
+LCD_clr:
+  MOV.B #0,&screen_column
+  MOV #0,R7
+  LCD_clr_outer:
+    MOV R7,R6
+    CALL #LCD_row
+    MOV #128,R6
+    LCD_clr_loop:
+      MOV #0,R4
+      CALL #LCD_data_out
+      DEC R6
+      JNE LCD_clr_loop
+    INC R7
+    CMP #4,R7
+    JNE LCD_clr_outer
+  MOV #0,R6
+  CALL #LCD_row
+  RET
+
+;R4 - data to send
+;R5 - clobbered
+;Returns in R4
+LCD_comm_out:
+  AND.B #(~LCD_CS),&P2OUT
+  AND.B #(~LCD_A0),&P2OUT
+  CALL #SPI_Send  
+  BIS.B #LCD_CS,&P2OUT
+  RET
+
+;R4 - data to send
+;R5 - clobbered
+;Returns in R4
+LCD_data_out:
+  AND.B #(~LCD_CS),&P2OUT
+  BIS.B #LCD_A0,&P2OUT
+  CALL #SPI_Send  
+  BIS.B #LCD_CS,&P2OUT
+  RET
+
+;R4,R5,R6 - clobbered
+LCD_init:
+  MOV #LCD_init_sequence,R6
+  LCD_init_loop:
+    MOV.B @R6+,R4
+    TST R4
+    JEQ LCD_init_done
+    CALL #LCD_comm_out
+    JMP LCD_init_loop
+  LCD_init_done:
+  RET
+  LCD_init_sequence:
+  ;Note 0x81 is "Electronic Volume Set" ie contrast. Following value is 0-0x3F
+    ;Was 0x2F (background pretty dark), 0x3F is solid black, 0x1F a little light
+  DB 0xA0, 0xAE, 0xC0, 0xA2, 0x2F, 0x21, 0x81, 0x25, 0x00       ;0 is stop sign
+  EVEN
+
+;R4,R5 - clobbered
+LCD_off:
+  ;comm_out(0xAE);	//Display OFF
+  MOV #0xAE,R4
+  CALL #LCD_comm_out
+  RET
+
+;R4,R5 - clobbered
+LCD_on:
+  ;comm_out(0xAF);	//Display ON
+  MOV #0xAF,R4
+  CALL #LCD_comm_out
+  RET
+
+;R6 - row
+;R4,R5 - clobbered
+LCD_row:
+  ;comm_out(0x40);	//Display start address + 0x40
+  MOV #0x40,R4
+  CALL #LCD_comm_out
+  
+  MOV.B LCD_row_lookup(R6),R4
+  
+  ;comm_out(0xB0+p);
+  ;MOV #0xB0,R4
+  CALL #LCD_comm_out
+  ;comm_out(0x10);	//column address upper 4 bits + 0x10
+  MOV #0x10,R4
+  CALL #LCD_comm_out
+  ;comm_out(0x00); 	//column address lower 4 bits + 0x00
+  MOV #0x00,R4
+  CALL #LCD_comm_out
+  RET
+  
+  LCD_row_lookup:
+    DB 0xB3,0xB2,0xB1,0xB0
+
+;R6 - column
+;R4,R5 - clobbered
+LCD_column:
+  MOV R6,R4
+  RRC R4
+  RRC R4
+  RRC R4
+  RRC R4
+  AND #0xF,R4
+  ADD #0x10,R4
+  CALL #LCD_comm_out
+  MOV R6,R4
+  AND #0xF,R4
+  CALL #LCD_comm_out
+  MOV.B R6,&screen_column
+  RET
+
+;R6 - character
+;R4,R5,R7 - clobbered
+putc:
+  SUB #32,R6    ;First char data (0) starts with space character (32)
+  MOV R6,R7
+  RLA R6        ;2x
+  RLA R6        ;4x
+  ADD R7,R6     ;1x+4x=5x
+  ADD #CharTable,R6
+  ;MOV.B @R6+,R7   ;number of columns in character
+  MOV #5,R7
+  putc_loop:
+    MOV.B @R6+,R4
+    CALL #LCD_data_out
+    DEC R7
+    JNE putc_loop
+  MOV #0,R4
+  CALL #LCD_data_out
+  ADD.B #6,&screen_column
+  RET
+
+;R6 - hex byte to print
+putc_hex:
+  MOV.B R6,R6           ;limit to byte
+  PUSH R6
+  RRA R6
+  RRA R6
+  RRA R6
+  RRA R6
+  CMP #10,R6
+  JL putc_hex_less
+    ;nibble >= 10
+    SUB #10,R6
+    ADD #'A',R6
+    JMP putc_hex_10s_done
+  putc_hex_less:
+    ADD #'0',R6
+  putc_hex_10s_done:
+  CALL #putc
+  
+  POP R6
+  AND #0xF,R6
+  CMP #10,R6
+  JL putc_hex_less2
+    ;nibble >= 10
+    SUB #10,R6
+    ADD #'A',R6
+    JMP putc_hex_10s_done2
+  putc_hex_less2:
+    ADD #'0',R6
+  putc_hex_10s_done2:
+  CALL #putc
+  RET
+
+;R6 - character
+;R4,R5,R7 - clobbered
+putc_inverted:
+  SUB #32,R6    ;First char data (0) starts with space character (32)
+  MOV R6,R7
+  RLA R6        ;2x
+  RLA R6        ;4x
+  ADD R7,R6     ;1x+4x=5x
+  ADD #CharTable,R6
+  ;MOV.B @R6+,R7   ;number of columns in character
+  MOV #5,R7
+  putc_inverted_loop:
+    MOV.B @R6+,R4
+    INV.B R4
+    CALL #LCD_data_out
+    DEC R7
+    JNE putc_inverted_loop
+  MOV #0xFF,R4
+  CALL #LCD_data_out
+  ADD.B #6,&screen_column
+  RET
+
+;R6 - character
+;R4,R5,R7 - clobbered
+putc_stay:
+  CALL #putc
+  MOV.B &screen_column,R6
+  SUB #6,R6
+  CALL #LCD_column
+  RET
+
+;R8 - string
+;R4,R5,R6,R7 - clobbered
+puts:
+  puts_loop:
+    MOV.B @R8,R6
+    TST R6
+    JEQ puts_done
+    CALL #putc
+    INC R8
+    JMP puts_loop
+  puts_done:
+  RET
+
+;R4,R5,R6,R7,R8 - clobbered
+puts_immed:
+  POP R8
+  CALL #puts
+  INC R8
+  BIT #1,R8
+  JEQ puts_immed_even
+    INC R8
+  puts_immed_even:
+  BR R8
+  
+puts_inverted:
+  puts_inverted_loop:
+    MOV.B @R8,R6
+    TST R6
+    JEQ puts_inverted_done
+    CALL #putc_inverted
+    INC R8
+    JMP puts_inverted_loop
+  puts_inverted_done:
+  RET
+  
+puts_inverted_immed:
+  POP R8
+  CALL #puts_inverted
+  INC R8
+  BIT #1,R8
+  JEQ puts_inverted_immed_even
+    INC R8
+  puts_inverted_immed_even:
+  BR R8
+  
+  
+LCD_end:
+  

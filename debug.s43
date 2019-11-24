@@ -1,0 +1,185 @@
+
+debug_begin:
+
+#ifdef TERMINAL_DEBUG
+
+  debug_getkey:
+    term_loop:
+      CMP #2,&TERM_DEBUG_STATE     ;2 - first char was -
+      JNE debug_term_not_2
+        MOV #3,&TERM_DEBUG_STATE   ;3 - print next char, insert c next
+        JMP debug_term_endif
+      debug_term_not_2:
+      CMP #3,&TERM_DEBUG_STATE     
+      JNE debug_term_not_3
+        MOV #'c',R4
+        MOV #4,&TERM_DEBUG_STATE   ;4 - c was inserted, proceed as normal
+        JMP term_debug_done
+      debug_term_not_3:
+      debug_term_endif:
+      
+      CALL #?C_GETCHAR
+      MOV R12,R4
+      term_debug_skip_key:
+      
+      ;Comment in file
+      CMP #';',R4
+      JNE term_debug_not_comment
+        term_debug_comment_loop:
+          CALL #?C_GETCHAR
+          MOV R12,R4
+          CMP #10,R4
+        JNE term_debug_comment_loop
+        JMP term_loop
+      term_debug_not_comment:
+      
+      ;E key
+      CMP #'E',R4
+      JNE term_debug_not_E
+        ;Done testing
+        JMP $
+      term_debug_not_E:
+      ;D key
+      CMP #'D',R4
+      JNE term_debug_not_D
+        ;Print out stack_X
+        MOV #' ',R12
+        CALL #?C_PUTCHAR
+        MOV #'=',R12
+        CALL #?C_PUTCHAR
+        MOV stack_X,R5
+        MOV #'-',R12
+        BIT #0x8000,R5
+        JNE term_debug_minus
+          MOV #' ',R12
+        term_debug_minus:
+        CALL #?C_PUTCHAR
+        
+        MOV #16,R4
+        term_debug_loop:
+          DEC R4
+          MOV.B stack_X+2(R4),R12
+          CALL #term_debug_digit1
+          CMP #15,R4
+          JNE term_debug_no_dot
+            MOV #'.',R12
+            CALL #?C_PUTCHAR
+          term_debug_no_dot:
+          MOV.B stack_X+2(R4),R12
+          CALL #term_debug_digit2
+          TST R4
+          JNE term_debug_loop
+          MOV #'e',R12
+          CALL #?C_PUTCHAR
+          
+          MOV stack_X,R5
+          BIC #0x8000,R5
+          CLRC
+          RLC R5
+          RRA R5
+          MOV #'+',R12
+          CMP #0x8000,R5
+          JNC term_debug_pos
+            MOV #0,R6
+            SUB R5,R6
+            MOV R6,R5
+            MOV #'-',R12
+          term_debug_pos:
+          CALL #?C_PUTCHAR
+          
+          MOV #1000,R6
+          MOV #0,R7
+          term_debug_exp_loop:
+            SUB R6,R5
+            JNC term_debug_underflow
+              INC R7
+              JMP term_debug_exp_loop
+            term_debug_underflow:
+            ADD R6,R5
+            ADD #'0',R7
+            MOV R7,R12
+            CALL #?C_PUTCHAR
+            MOV #-2,R7
+            term_debug_exp_10s_loop:
+              ADD #2,R7
+              CMP term_debug_10s(R7),R6
+            JNE term_debug_exp_10s_loop
+            MOV term_debug_10s+2(R7),R6
+            TST R6
+            JEQ term_debug_exp_done
+            MOV #0,R7
+            JMP term_debug_exp_loop
+            term_debug_10s:
+            DC16 1000,100,10,1,0
+            term_debug_exp_done:
+          MOV #10,R12
+          CALL #?C_PUTCHAR
+          MOV #0,&TERM_DEBUG_STATE
+        JMP term_loop
+      term_debug_not_D:
+      ;Enter key in text file
+      CMP #10,R4
+      JNE term_debug_not_enter
+        JMP term_loop
+      term_debug_not_enter:
+      ;Space key
+      CMP #' ',R4
+      JNE term_debug_not_space
+        MOV #' ',R12
+        CALL #?C_PUTCHAR
+        MOV #KEY_ENTER,R4
+        MOV #0,&TERM_DEBUG_STATE
+        JMP term_debug_done
+      term_debug_not_space:
+      ;e key
+      CMP #'e',R4
+      JNE term_debug_not_e
+        MOV #5,&TERM_DEBUG_STATE
+      term_debug_not_e:
+      
+      CMP #0,&TERM_DEBUG_STATE     ;0 - just started parsing
+      JNE term_debug_not_state0
+        MOV #1,&TERM_DEBUG_STATE   ;1 - first char was not -
+        CMP #'-',R4
+        JNE term_debug_not_minus
+          MOV #2,&TERM_DEBUG_STATE ;2 - first char was -
+          MOV #'-',R12
+          CALL #?C_PUTCHAR
+          JMP term_loop
+        term_debug_not_minus:
+        ;MOV #' ',R12
+        ;CALL #?C_PUTCHAR
+      term_debug_not_state0:
+      CMP #5,&TERM_DEBUG_STATE     ;5 - set state to 0 for next go around
+      JNE term_debug_not_state5
+        MOV #0,&TERM_DEBUG_STATE
+      term_debug_not_state5:
+      
+      MOV R4,R12
+      CALL #?C_PUTCHAR
+      JMP term_debug_done
+      ?C_PUTCHAR:
+      RET
+      ?C_GETCHAR:
+      RET
+      term_debug_digit1:
+        AND #0xF0,R12
+        RRA R12
+        RRA R12
+        RRA R12
+        RRA R12
+        ADD #'0',R12
+        CALL #?C_PUTCHAR
+        RET
+      term_debug_digit2:
+        AND #0xF,R12
+        ADD #'0',R12
+        CALL #?C_PUTCHAR
+        RET
+      term_debug_done:
+      ;Fetched key is in R4
+      RET
+      
+#endif
+
+debug_end:

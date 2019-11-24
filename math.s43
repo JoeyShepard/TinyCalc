@@ -1,0 +1,1940 @@
+;FUNCTIONS FOR THE FOUR BASIC OPERATIONS
+;=======================================
+;AddBCD
+  ;R4 src1 (pointer to 9 word BCD number)
+  ;R5 src2 (pointer to 9 word BCD number)
+  ;R6 dest (pointer to 9 word BCD number)
+  ;R7-R11 temp registers
+
+  ;R4 - return status - 0=success
+
+
+;AddSubSetup
+  ;Input
+  ;====
+  ;R4 src1 (pointer to 9 word BCD number)
+  ;R5 src2 (pointer to 9 word BCD number)
+  ;R6 dest (pointer to 9 word BCD number)
+  
+  ;Output
+  ;======
+  ;R5 points to larger of src1 or src2
+  ;R10 points to difference in exponents   
+  
+  ;R7-12 clobbered
+
+
+math_begin:
+
+;R4 src1 (pointer to 9 word BCD number)
+;R5 src2 (pointer to 9 word BCD number)
+;R6 dest (pointer to 9 word BCD number)
+;R7-R11 temp registers
+
+;R4 - return status - 0=success
+AddBCD:
+  ;#define AddVariant 6
+    ;Built on 5, which was fastest but largest
+    ;Adjusted to use new exponent scheme
+  
+  CALL #AddSubSetup
+  TST R15   ;Return of 0 means already copied to dest
+  JNE AddBCD_not_copied 
+    MOV #0,R4         ;Success
+    RET
+  AddBCD_not_copied:
+ 
+  ADD #2,R5
+  CLRC
+  DADD @R5+,2(R6)
+  DADD @R5+,4(R6)
+  DADD @R5+,6(R6)
+  DADD @R5+,8(R6)
+  DADD @R5+,10(R6)
+  DADD @R5+,12(R6)
+  DADD @R5+,14(R6)
+  DADD @R5+,16(R6)
+  JNC AddBCD_no_carry
+    
+    MOV R6,R5
+    ADD #2,R5
+    MOV #add_shift_buff,R9
+    CALL #func_copy16
+    
+    ;PUSH R5             ;source (save)
+    MOV #add_shift_buff,R5
+    MOV #1,R7
+    MOV R6,R8           ;dest (R6 not clobbered)
+    ADD #2,R8           ;skip info word
+    MOV #0,R9           ;sign (positive)
+    CALL #func_shift10
+    
+    ;Carry
+    BIS #0x1000,16(R6)
+    MOV @R6,R5
+    CMP #0x4000,R5
+    JNC AddBCD_no_extend
+      BIS #0x8000,R5
+    AddBCD_no_extend:
+    INC R5
+    CMP #FLOAT_MAX_EXP+1,R5
+    JNC AddBCD_no_overflow
+      CMP #FLOAT_MIN_EXP,R5
+      JC AddBCD_no_overflow
+        CMP #0x8000,R5
+        JC AddBCD_no_overflow
+        ;JC AddBCD_underflow
+          MOV #ERROR_EXP_OVERFLOW,R4
+          RET
+        ;AddBCD_underflow:
+          ;MOV #ERROR_EXP_UNDERFLOW,R4
+          ;RET
+    AddBCD_no_overflow:
+    BIC #0x8000,R5
+    MOV R5,0(R6)
+  AddBCD_no_carry:
+  MOV #0,R4   ;success
+  RET
+
+
+;Input
+;====
+;R4 src1 (pointer to 9 word BCD number)
+;R5 src2 (pointer to 9 word BCD number)
+;R6 dest (pointer to 9 word BCD number)
+
+;Output
+;======
+;R5 points to larger of src1 or src2
+;R10 points to difference in exponents  
+
+;R7-11 clobbered    
+
+;Set up registers for addition or subtraction
+AddSubSetup:
+  MOV @R4,R7                  ;Copy first word (info) of src1
+  AND #0x7FFF,R7              ;Mask out sign bit
+  CMP #0x4000,R7              ;Extend sign
+  JL AddSubSetup_no_extend1
+    BIS #0x8000,R7
+  AddSubSetup_no_extend1:
+  MOV @R5,R8                  ;Copy first word (info) of src2
+  AND #0x7FFF,R8              ;Mask out sign bit
+  CMP #0x4000,R8              ;Extend sign
+  JL AddSubSetup_no_extend2
+    BIS #0x8000,R8
+  AddSubSetup_no_extend2:
+  MOV R8,R10                  ;Find difference in exponents
+  SUB R7,R10
+  MOV #1,R15                  ;return value 1 if no switch
+  JGE AddSubSetup_no_swap     ;Swap if necessary so R5 is bigger exponent
+      MOV R4,R9               ;Swap R5 and R4 (pointers to src1 and 2)
+      MOV R5,R4
+      MOV R9,R5
+      MOV R7,R10              ;Recalculate diff in exponents              
+      SUB R8,R10
+      MOV #2,R15              ;return value 2 to show switched
+  AddSubSetup_no_swap:
+  ;R7, R8, R9 free. R10 diff in exponents
+  ;R4 points to src with smaller exponnent
+  ;R5 points to src with larger exponent
+  ;R6 points to dest
+  
+  ;CMP #16,R10                 ;If diff in exponents >16, just copy to dest
+  CMP #32,R10
+  JL AddSubSetup_no_copyexit
+      ;Copy R5 (num w bigger exponent) to dest and exit
+      MOV R6,R9
+      CALL #func_copy18
+      ;Set sign negative if arguments switched
+      CMP #2,R15
+      JNE AddSubSetup_copyexit_pos
+        BIS #0x8000,0(R6)
+      AddSubSetup_copyexit_pos:
+      MOV #0,R15
+      RET
+  AddSubSetup_no_copyexit:
+  
+  ;R4 - smaller number
+  ;R5 - larger number
+  ;R6 - destination
+  ;R7-R9 - free
+  ;R10 - diff in exponents
+  ;R11 free
+  
+  MOV 0(R5),0(R6)      ;copy info word (sign, exponent) to dest
+  
+  ;Move R4, smaller number, to dest with digits shifted   
+  PUSH R5             ;source (save)
+  MOV R4,R5
+  ADD #2,R5           ;skip info word
+  ;PUSH R10            ;digit count (R10 clobbered)
+  MOV R10,R7
+  MOV R6,R8           ;dest (R6 not clobbered)
+  ADD #2,R8           ;skip info word
+  MOV #0,R9           ;sign (positive)
+  CALL #func_shift10
+  ;POP R10
+  POP R5
+
+  RET
+  
+SubBCD:
+    ;Based on version 1. improved exponent scheme
+
+    ;R4 src1 (pointer to 9 word BCD number)
+    ;R5 src2 (pointer to 9 word BCD number)
+    ;R6 dest (pointer to 9 word BCD number)
+    ;R7-12 temp registers
+
+    CALL #AddSubSetup
+    TST R15   ;Return of 0 means already copied to return
+    JNE SubBCD_not_copied
+      MOV #0,R4 ;Success
+      RET
+    SubBCD_not_copied:
+    
+      ADD #2,R5
+      MOV #0x6666,R9
+      CMP #2,R15                  ;1-not switched, 2-switched
+      JEQ SubBCD_switched_sub
+          
+      ADD R9,2(R6)
+      INV 2(R6)
+      ADD R9,4(R6)
+      INV 4(R6)
+      ADD R9,6(R6)
+      INV 6(R6)
+      ADD R9,8(R6)
+      INV 8(R6)
+      ADD R9,10(R6)
+      INV 10(R6)
+      ADD R9,12(R6)
+      INV 12(R6)
+      ADD R9,14(R6)
+      INV 14(R6)
+      ADD R9,16(R6)
+      INV 16(R6)
+    
+      SETC
+      DADD @R5+,2(R6)
+      DADD @R5+,4(R6)
+      DADD @R5+,6(R6)
+      DADD @R5+,8(R6)
+      DADD @R5+,10(R6)
+      DADD @R5+,12(R6)
+      DADD @R5+,14(R6)
+      DADD @R5+,16(R6)
+      JMP SubBCD_switch_done
+    SubBCD_switched_sub:
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      SETC
+      DADD R7,2(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,4(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,6(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,8(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,10(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,12(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,14(R6)
+      MOV SR,R8
+      AND #1,R8
+      
+      MOV @R5+,R7
+      ADD R9,R7
+      INV R7
+      ;MOV R8,SR
+      CLRC
+      BIS R8,SR
+      DADD R7,16(R6)
+      ;MOV SR,R8
+      ;AND #1,R8
+      
+    SubBCD_switch_done:
+
+    MOV SR,R14                  ;Return sign bit to caller
+    AND #1,R14                  ;Mask out all but carry
+    
+    ;R7-R9,R11,R12 free
+    TST R14
+    JNE SubBCD_no_invert
+      MOV #0x6666,R8
+      MOV R6,R11
+      ADD #2,R11
+      MOV #8,R9
+      MOV #1,R12        ;Carry
+      SubBCD_neg_loop:
+        MOV @R11,R7
+        ADD R8,R7
+        INV R7
+        CLRC
+        BIS R12,SR
+        DADD #0,R7
+        MOV SR,R12
+        AND #1,R12
+        MOV R7,0(R11)
+        ADD #2,R11
+        DEC R9
+        JNE SubBCD_neg_loop
+        
+        ;IF CARRY HERE, HAVE TO WRAP AROUND 1!!!!
+        
+    SubBCD_no_invert:
+
+    MOV R6,R9                   ;Point to end of result data
+    ADD #17,R9
+    MOV R9,R8
+    MOV R6,R7                   ;Beginning of data-1 (stop here)
+    ADD #1,R7
+        
+    SubBCD_zero_count:
+      TST.B 0(R9)
+      JNE SubBCD_zero_done      ;Non zero byte found?
+      DEC R9                    ;Decrease pointer
+      CMP R7,R9                 ;Reached beginning (done)?
+      JNE SubBCD_zero_count
+        MOV #0,0(R6)            ;If equal, all zeros. Set exp 0
+        MOV #0,R4
+        RET
+    SubBCD_zero_done:
+    ;R7 is beginning of data
+    ;R8 is end of data (where looping started)
+    ;R9 is first non-zero byte
+    ;   (R7 and R9 are not equal)
+    
+    MOV.B 0(R9),R11
+    AND #0xF0,R11
+    MOV #0,R12
+    JNE SubBCD_nibble_no_add
+      MOV #1,R12
+    SubBCD_nibble_no_add:
+  
+    MOV R8,R11
+    SUB R9,R11                  ;Number of nibbles to adjust
+    RLA R11                     ;x2 since just counted bytes
+    ADD R12,R11                 ;Extra nibble if 0X
+     
+    ;Original
+    /*
+    SUB R11,0(R6)              ;Decrease exponent (original)
+    ;CHECK EXPONENT!!!
+    */
+    
+    ;if R11-R12==0, fill with zeroes
+      ;5e31+5-5e21
+    ;20190817 - Below is just to debug (havent been able to recreate bug. fixed before?)
+      ;Yes, maybe fixed since new terminal output is right
+      ;5e31+5-5e21=4.9999999995e+31 but calc shows 4.9999999995000e+31
+      ;Is this what I meant by zero fill?
+      ;Examine the digits then at the end
+        ;5.00000...+5=5.00000...5
+        ;4.9999000...5 - Good
+        ;So above is mistake maybe? Should be 5e31+5-5e31
+      ;5e31+5-5e31
+        ;=5, Good
+        ;Bug must be fixed then (recheck though at end!)
+      ;Debug
+      /*
+      CMP R11,R12
+      JNE SubBCD_debug1
+        NOP
+      SubBCD_debug1:
+      */
+      
+    ;Check for underflow
+    PUSH R12
+    MOV 0(R6),R12
+    AND #0x7FFF,R12
+    CMP #0x4000,R12
+    JNC SubBCD_exp_pos
+      BIS #0x8000,R12
+    SubBCD_exp_pos:
+    SUB R11,R12
+    ;See below. Should never need to fill zeroes
+    ;JNE SubBCD_no_fill_zero
+    ;  POP 12
+    ;  JMP SubBCD_fill_zero
+    ;SubBCD_no_fill_zero:
+    CMP #0x4000,R12
+    JNC SubBCD_no_underflow_check ;Exp is pos    
+      CMP #FLOAT_MIN_EXP,R12
+      JC SubBCD_no_underflow_check
+        POP R12
+        MOV #ERROR_EXP_UNDERFLOW,R4
+        RET
+    SubBCD_no_underflow_check:
+    BIC #0x8000,R12
+    MOV R12,0(R6)
+    POP R12
+    ;JMP SubBCD_no_underflow
+    
+    ;Checks above if all zeroes, so this should never happen
+    /*
+    SubBCD_fill_zero:
+    ;JC SubBCD_no_underflow      ;If no underflow, skip
+      SUB #1,R8                 ;Align since copying words
+      SubBCD_underflow_loop:
+      
+        ;WHAT TO DO IF SWITCHED ARGS???
+          ;Seems it will be the larger exponent in either case
+        MOV #0,0(R8)            ;Set all words to zero
+        SUB #2,R8
+        CMP R6,R8
+        JNE SubBCD_underflow_loop
+      MOV #0,0(R6)           ;Set exp 0, sign positive
+      
+      ;Could set return val to show result was zero
+      MOV #0,R4 ;Success
+      RET
+      
+    SubBCD_no_underflow:
+    */ 
+    
+    CMP R9,R8
+    JEQ SubBCD_fill_done        ;No adjustment to exponent
+    
+    SubBCD_copy_loop:
+      MOV.B @R9,0(R8)           ;Copy non-zero to end (beginning of number)
+      DEC R9
+      DEC R8
+      CMP R7,R9                 ;Copy all data forward
+      JNE SubBCD_copy_loop      
+    
+    SubBCD_fill_zeros:
+      CMP R7,R8
+      JEQ SubBCD_fill_done
+      MOV.B #0,0(R8)
+      DEC R8
+      JMP SubBCD_fill_zeros
+    SubBCD_fill_done:
+    
+    ;R7,R8,R9 should no longer be needed
+    
+    ;Shift ahead one nibble if needed
+    TST R12
+    JEQ SubBCD_no_nibble_shift
+      AND #0,R11        ;Low nibble shifted in
+      MOV R6,R8         ;Point to data
+      ADD #2,R8         
+      MOV #8,R9         ;Count of words
+      SubBCD_nibble_loop:
+        MOV #0,R12      ;Shifted out nibble
+        MOV 0(R8),R7
+        RLA R7
+        RLC R12
+        RLA R7
+        RLC R12
+        RLA R7
+        RLC R12
+        RLA R7
+        RLC R12
+        BIS R11,R7
+        MOV R12,R11
+        MOV R7,0(R8)
+        ADD #2,R8
+        DEC R9
+        JNE SubBCD_nibble_loop
+    SubBCD_no_nibble_shift:
+    
+    TST R14
+    JNE SubBCD_no_neg
+      BIS #0x8000,0(R6)
+    SubBCD_no_neg:
+    ;TEST!
+    ;1. Equal values
+    ;   num1-num1: good
+    ;   num2-num2: good
+    ;2. Pos result, no adjustment
+    ;   num2-num1: good
+    ;3. Neg result, no adjustment
+    ;   num1-num2: 
+    ;4. Pos result, adjustment
+    ;   num2-num1: good
+    ;5. Neg result, adjustment
+    ;   num1-num2: good
+    ;   
+
+    MOV #0,R4
+    RET
+  
+MultBCD:
+    ;R4 src1 (pointer to 9 word BCD number)
+    ;R5 src2 (pointer to 9 word BCD number)
+    ;R6 dest (pointer to 9 word BCD number)
+    ;R7-12 temp registers
+    
+    /*
+    MOV @R4,R7                        ;Info word
+    AND #0x8000,R7                    ;Keep only sign
+    JEQ MultBCD_no_buff_copy1         ;If positive, dont copy
+      MOV R4,R7                       ;R7 points to buffer
+      ADD #16,R7                      ;Point to last word
+      MOV #14,R8                      ;Cont down from last word
+      MultBCD_buff_copy1:
+        MOV @R7,mult_buff1(R8)
+        ADD #0x6666,mult_buff1(R8)
+        INV mult_buff1(R8)
+        SUB #2,R7
+        SUB #2,R8
+        JC MultBCD_buff_copy1
+      MOV #mult_buff1,R7              ;Point R7 to buffer
+      JMP MultBCD_buff_copy_done1
+    MultBCD_no_buff_copy1:
+    */
+    MOV R4,R7                         ;Point R7 to original data
+    ADD #2,R7
+    MultBCD_buff_copy_done1:
+    
+    /*
+    MOV @R5,R8                        ;Info word
+    AND #0x8000,R8                    ;Keep only sign
+    JEQ MultBCD_no_buff_copy2         ;If positive, dont copy
+      MOV R5,R8                       ;R8 points to buffer
+      ADD #16,R8                      ;Point to last word
+      MOV #14,R9                      ;Cont down from last word
+      MultBCD_buff_copy2:
+        MOV @R8,mult_buff2(R9)
+        ADD #0x6666,mult_buff2(R9)
+        INV mult_buff2(R9)
+        SUB #2,R8
+        SUB #2,R9
+        JC MultBCD_buff_copy2
+      MOV #mult_buff2,R8              ;Point R8 to buffer
+      JMP MultBCD_buff_copy_done2
+    MultBCD_no_buff_copy2:
+    */
+    MOV R5,R8                         ;Point R8 to original data
+    ADD #2,R8
+    MultBCD_buff_copy_done2:
+    
+    MOV #30,R9
+    MultBCD_zero_result:
+      MOV #0,mult_result(R9)
+      MOV #0,mult_carry_buff(R9)
+      SUB #2,R9
+      JC MultBCD_zero_result
+    
+    MOV R7,R9         ;arg1 (R7) end pointer
+    ADD #16,R9        
+    MOV R8,R10        ;arg2 (R8) end pointer
+    ADD #16,R10
+    MOV #0,R14        ;Pointer into mult_result
+    
+    ;Same until here
+    ;R7,R8 - pointers to operands
+    ;R9,R10 - end pointers
+    MultBCD_mult_loop_outer:
+      MOV.B @R8,R12
+      ;Try 1 - calculate
+      MOV R12,R13             ;Mask out 10's place
+      AND #0xF,R13
+      AND #0xFFF0,R12         ;Mask out 1's place
+      RRA R12
+      ADD R12,R13
+      RRA R12
+      RRA R12
+      ADD R12,R13
+      MOV R13,R15
+      ;Try 2 - lookup table
+      MultBCD_mult_loop_inner:
+        MOV.B @R7+,R11
+        ;MOV.B @R8,R12
+        MOV R15,R13           ;Restore binary converted arg
+        MOV #0,R12            ;Running total
+        RRA R13
+        JNC MultBCD_no_add_0
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_0:
+        ;Carry should always be unset here
+        DADD R11,R11
+        
+        RRA R13
+        JNC MultBCD_no_add_1
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_1:
+        ;Carry should always be unset here
+        DADD R11,R11
+        
+        RRA R13
+        JNC MultBCD_no_add_2
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_2:
+        ;Carry should always be unset here
+        DADD R11,R11
+        
+        RRA R13
+        JNC MultBCD_no_add_3
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_3:
+        ;Carry should always be unset here
+        DADD R11,R11
+        
+        RRA R13
+        JNC MultBCD_no_add_4
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_4:
+        ;Carry should always be unset here
+        DADD R11,R11
+        
+        RRA R13
+        JNC MultBCD_no_add_5
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_5:
+        ;Carry should always be unset here
+        DADD R11,R11
+        
+        RRA R13
+        JNC MultBCD_no_add_6
+          CLRC
+          DADD R11,R12
+        MultBCD_no_add_6:
+        ;Carry should always be unset here
+        ;DADD R11,R11
+        
+        ;Divider always 0 at this point???
+
+        ;R12 is calculated answer
+        ;R11 and R13 free
+        MOV.B R12,R11           ;Get low byte of result
+        CLRC
+        DADD.B R11,mult_result(R14)     ;Add low byte of result
+        SWPB R12
+        MOV.B R12,R11      
+        DADD.B R11,(mult_result+1)(R14) ;Add high byte of result
+        DADD.B #0,mult_carry_buff(R14)  ;Buffer carry but dont add
+        INC R14                 ;Advance result pointer
+        ;R7 auto incremented above
+        CMP R7,R9               ;Reached end yet?
+      JNE MultBCD_mult_loop_inner
+    INC R8
+    CMP R8,R10
+    JEQ MultBCD_calc_done
+      SUB #16,R7            ;Reset pointer into src1
+      SUB #15,R14           ;Rest pointer into dest, -1 place
+      JMP MultBCD_mult_loop_outer
+    MultBCD_calc_done:
+    
+    ;R7-R15 free
+    ;Add carries 
+    MOV #0,R7                 ;Index into result and carry buffer
+    MOV #0,R8                 ;Clear carry
+    
+    MultBCD_carry_prop:
+      ;MOV R8,SR                ;Don't lose interrupt bit
+      CLRC
+      AND #1,R8                 ;Only keep carry
+      BIS R8,SR                 ;Set carry only
+      DADD.B mult_carry_buff(R7),(mult_result+2)(R7)
+      MOV SR,R8
+      INC R7
+      CMP #31,R7
+    JNE MultBCD_carry_prop
+    
+    ;Copy result to destination
+    MOV #0,R7                 ;index into result
+    MOV R6,R9                 ;destinatin pointer
+    MultBCD_result_copy:
+      MOV (mult_result+16)(R7),2(R9)
+      ADD #2,R7
+      ADD #2,R9
+      CMP #16,R7
+      JNE MultBCD_result_copy
+    
+    ;Form info word at destination
+    MOV @R4,R7                ;First operand                
+    MOV R7,R8                 ;Save copy for calculating exponent
+    RLC R7                    ;Get sign bit
+    MOV #0,R9                 ;Add sign bits here               
+    ADDC #0,R9
+    MOV @R5,R7                ;Second operand
+    MOV R7,R10                ;Save copy
+    RLC R7                    ;Get sign bit
+    ADDC #0,R9
+    CMP #1,R9                 ;If 1 neg, else pos
+    JNE MultBCD_sign_pos
+      MOV #0x8000,0(R6)       ;Mark sign negative at dest
+      ;Changed above. Shouldn't be necessary now
+      /*
+      ;Turn result into 2's complement
+      MOV R6,R9               ;Pointer into destination
+      MOV #8,R7               ;Word counter
+      MultBCD_sign_loop:
+        ADD #0x6666,2(R9)
+        INV 2(R9)
+        ADD #2,R9
+        DEC R7
+        JNE MultBCD_sign_loop
+        */
+      JMP MultBCD_sign_done
+    MultBCD_sign_pos:
+      MOV #0x0,0(R6)       ;Mark sign positive at dest
+    MultBCD_sign_done:
+      
+    ;R8 and R10 hold info words
+    AND #0x7FFF,R8            ;Mask out sign bit
+    CMP #0x4000,R8            ;>=0x4000 is negative exponent
+    JNC MultBCD_exp1_neg
+      BIS #0x8000,R8
+    MultBCD_exp1_neg:
+
+    AND #0x7FFF,R10
+    CMP #0x4000,R10            ;>=0x4000 is positive exponent
+    JNC MultBCD_exp2_neg
+      BIS #0x8000,R10
+    MultBCD_exp2_neg:
+        
+    ADD R8,R10  ;Sum of exponents
+    
+    INC R10     ;Needed if first digit of result not zero
+    MOV 16(R6),R8
+    AND #0xF000,R8
+    JNE MultBCD_no_digit_shift
+      DEC R10           ;Above INC was not needed
+      ADD #2,R6         ;Point to data
+      MOV #8,R11        ;Shift 8 words
+      MOV #0,R7         ;Shifted bits from last time
+      MultBCD_shift_loop:
+        MOV @R6+,R8     ;Shifted word
+        MOV #0,R9       ;Shifted out bits
+        CLRC
+        RLC R8
+        RLC R9 
+        RLC R8
+        RLC R9
+        RLC R8
+        RLC R9
+        RLC R8
+        RLC R9
+        BIS R7,R8       ;Shifted bits from last time
+        MOV R9,R7       ;Shifted bits for next time
+        MOV R8,-2(R6)   ;Already incremented above
+        DEC R11
+      JNE MultBCD_shift_loop
+      SUB #18,R6
+    MultBCD_no_digit_shift:
+    
+    CMP #FLOAT_MAX_EXP+1,R10
+    JL MultBCD_no_overflow  
+      MOV #ERROR_EXP_OVERFLOW,R4
+      RET
+    MultBCD_no_overflow:
+    
+    CMP #FLOAT_MIN_EXP,R10
+    JGE MultBCD_no_underflow
+      MOV #ERROR_EXP_UNDERFLOW,R4
+      RET
+    MultBCD_no_underflow:
+    
+    BIC #0x8000,R10
+    BIS R10,0(R6)       ;Sign written above, exp clear
+    MOV #0,R4
+    RET
+
+DivBCD:
+    ;R4 src1 (pointer to 9 word BCD number) divisor
+    ;R5 src2 (pointer to 9 word BCD number) 
+    ;R6 dest (pointer to 9 word BCD number)
+    ;R7-12 temp registers
+        
+    ;Modified from variant 4 - goes by nibble
+    ;Numbers to beat from variant 4:
+    ;     155k cycles for 999/1
+    ;     85k cycles with test data!
+    ;     92,848 with shortcut but not correct answer
+    ;Variant 5: 25k cycles!
+    
+    /*
+    MOV @R4,R7                        ;Info word
+    AND #0x8000,R7                    ;Keep only sign
+    JNE DivBCD_no_buff_copy1          ;If negative, don't copy (but still positive copy)
+      MOV R4,R7                       ;R7 points to buffer
+      ADD #16,R7                      ;Point to last word
+      MOV #14,R8                      ;Count down from last word
+      DivBCD_buff_copy1:
+        MOV @R7,div_buff1(R8)
+        MOV @R7,div_buff2(R8)         ;Make positive copy too
+        ADD #0x6666,div_buff1(R8)
+        INV div_buff1(R8)
+        SUB #2,R7
+        SUB #2,R8
+        JC DivBCD_buff_copy1
+      MOV #div_buff1,R7              ;Point R7 to buffer
+      JMP DivBCD_buff_copy_done1
+    DivBCD_no_buff_copy1:
+      MOV R4,R7                       ;R7 points to buffer
+      ADD #16,R7                      ;Point to last word
+      MOV #14,R8                      ;Cont down from last word
+      DivBCD_buff_copy1_pos_only:
+        ;MOV @R7,div_buff1(R8)        ;Not needed since already negative
+        MOV @R7,div_buff2(R8)         ;Make positive copy too
+        ADD #0x6666,div_buff2(R8)
+        INV div_buff2(R8)
+        SUB #2,R7
+        SUB #2,R8
+        JC DivBCD_buff_copy1_pos_only
+      MOV R4,R7                         ;Point R7 to original data
+      ADD #2,R7
+    DivBCD_buff_copy_done1:
+    */
+    
+    ;Check for division by zero
+    ;(assuming first digit of zero means whole thing is zero)
+    TST.B 17(R4)
+    JNE DivBCD_not_div_0
+      MOV #ERROR_DIV_ZERO,R4
+      RET
+    DivBCD_not_div_0:
+    
+    ;Check for zero numerator
+    TST.B 17(R5)
+    JNE DivBCD_not_num_0
+      MOV #18,R7
+      DivBCD_num_loop:
+        MOV.B #0,0(R6)
+        INC R6
+        DEC R7
+      JNE DivBCD_num_loop
+      MOV #0,R4
+      RET
+    DivBCD_not_num_0:
+    
+    
+    
+    
+    MOV R4,R7                       ;R7 points to buffer
+    ADD #16,R7                      ;Point to last word
+    MOV #14,R8                      ;Count down from last word
+    DivBCD_buff_copy1:
+      MOV @R7,div_buff1(R8)
+      MOV @R7,div_buff2(R8)         ;Make positive copy too
+      ADD #0x6666,div_buff1(R8)
+      INV div_buff1(R8)
+      SUB #2,R7
+      SUB #2,R8
+      JC DivBCD_buff_copy1
+    MOV #div_buff1,R7              ;Point R7 to buffer
+    
+    /*
+    MOV @R5,R8                        ;Info word
+    AND #0x8000,R8                    ;Keep only sign
+    JEQ DivBCD_pos_buff_copy          ;If positive, just copy
+      MOV R5,R8                       ;R8 points to buffer
+      ADD #16,R8                      ;Point to last word
+      MOV #14,R9                      ;Cont down from last word
+      DivBCD_buff_copy2:
+        MOV @R8,(div_numerator+16)(R9)
+        ADD #0x6666,(div_numerator+16)(R9)
+        INV (div_numerator+16)(R9)
+        MOV #0,div_numerator(R9)
+        SUB #2,R8
+        SUB #2,R9
+        JC DivBCD_buff_copy2
+      JMP DivBCD_buff_copy_done2
+    DivBCD_pos_buff_copy:
+      MOV R5,R8                       ;R8 points to buffer
+      ADD #16,R8                      ;Point to last word
+      MOV #14,R9                      ;Cont down from last word
+      DivBCD_pos_buff_copy2:
+        MOV @R8,(div_numerator+16)(R9)
+        MOV #0,div_numerator(R9)
+        SUB #2,R8
+        SUB #2,R9
+        JC DivBCD_pos_buff_copy2
+    DivBCD_buff_copy_done2:
+    MOV #div_numerator+16,R8         ;First 16 bytes 0 
+    */
+        
+    ;Debug
+    ;MOV #0,R8
+    ;dbg_loop1:
+    ;  MOV #0xCDAB,div_numerator(R8)
+    ;  ADD #2,R8
+    ;  CMP #34,R8
+    ;JNE dbg_loop1
+    
+    MOV R5,R8                       ;R8 points to buffer
+    ADD #16,R8                      ;Point to last word
+    ;ADD #18,R8                      ;Point to last word
+    MOV #14,R9                      ;Cont down from last word
+    ;MOV #16,R9                      ;Cont down from last word
+    DivBCD_buff_copy2:
+      ;MOV @R8,(div_numerator+16)(R9)
+      MOV @R8,(div_numerator+18)(R9)
+      MOV #0,div_numerator(R9)
+      SUB #2,R8
+      SUB #2,R9
+      JC DivBCD_buff_copy2
+    ;Copied info word, so set to zero
+    MOV #0,&div_numerator+16
+    ;MOV #div_numerator+16,R8         ;First 16 bytes 0 
+    MOV #div_numerator+18,R8         ;First 18 bytes 0 
+      
+    ;R7 is pointer to divisor
+    ;R8 is 16 bytes into div_numerator (don't hardcode since changes)
+    ;R9-R15 free
+
+    ;Create shifted version
+    ;MOV #0,R13                ;Init save nibble for buff2
+    ;MOV R7,R10                ;Pointer to divisor (neg)
+    MOV #9,R10                ;Init save nibble for buff1
+    ;MOV #div_buff2,R11        ;Pointer to positive buff
+    MOV #16,R11                ;Count of bytes
+    MOV #div_buff_shifted1,R14        ;Negative version
+    MOV #div_buff_shifted2,R15        ;Positive version
+    DivBCD_shift_loop:
+    
+      ;First, buff1 (or original if neg), negative version
+      MOV.B @R7+,R12
+      RLA R12
+      RLA R12
+      RLA R12
+      RLA R12
+      MOV.B R12,R9
+      SWPB R12
+      
+      BIS R10,R9      ;Combine 1s with tens of last byte
+      MOV.B R9,0(R14) ;Write to div_buff_shifted1
+      MOV.B R12,R10   ;Save tens shifted into 1 for next time
+      INC R14
+      
+      ;Alternative to loading is generate self
+      ;7 cycles
+      ADD.B #0x66,R9
+      INV.B R9
+      MOV.B R9,0(R15)
+      INC R15
+     
+      ;R12 is tens shifted into 1s
+      ;R9 is 1s shifted into tens
+      ;R13 is R12 from last time
+      
+      DEC R11
+      ;CMP #(div_buff2+16),R11
+    JNE DivBCD_shift_loop
+    
+    ;Write last (17th) byte
+    BIS.B #0x90,R10
+    MOV.B R10,0(R14) ;Write to div_buff_shifted2
+    ADD.B #0x66,R10
+    INV.B R10
+    MOV.B R10,0(R15)
+    
+    ;Reset pointer
+    SUB #16,R7        ;Should be 0x280 after
+
+    ;R7 is pointer to divisor
+    ;R8 is 16 bytes into div_numerator (don't hardcode since changes)
+    ;R9-R15 free
+    
+    ;Write zeros at destination
+    MOV #0,0(R6)
+    MOV #0,2(R6)
+    MOV #0,4(R6)
+    MOV #0,6(R6)
+    MOV #0,8(R6)
+    MOV #0,10(R6)
+    MOV #0,12(R6)
+    MOV #0,14(R6)
+    MOV #0,16(R6)
+       
+    MOV R7,R9         ;divisor (R7) end pointer
+    ADD #16,R9        ;<===NEEDED?
+    
+    MOV R6,R10        ;Dest pointer. Start at MSB
+    ADD #17,R10
+    
+    ;Added in variant 5
+    ;MOV #0,R13 ;      Start out using byte aligned version then nibble aligned
+    ;MOV #div_buff_shifted1,R14        ;Copy of nibble aligned version
+    ;MOV #1,R15                        ;byte aligned, so +1 not +10
+    
+    ;Above seems to waste one nibble!
+    MOV #0,R13 ;Start out using byte aligned version then nibble aligned
+    MOV #div_buff_shifted1,R14        ;Copy of nibble aligned version
+    MOV #0x10,R15                        ;byte aligned, so +1 not +10
+    
+    ;R7 denominator
+    ;R8 numerator (+16 offset at this point)
+    ;R9 - END POINTER BUT USED AT ALL?
+    ;R10 destination
+    ;R12 carry save
+    ;R13 whether add/sub nibble even or odd offset version
+    ;R14 holds alternate R7 when switch btw nibble odd/even
+    ;R15 1 or 10 to add to dest depending on nibble mode
+    
+    DivBCD_sub_loop:        
+      SETC
+      DADD.B @R7+,0(R8)
+      DADD.B @R7+,1(R8)
+      DADD.B @R7+,2(R8)
+      DADD.B @R7+,3(R8)
+      DADD.B @R7+,4(R8)
+      DADD.B @R7+,5(R8)
+      DADD.B @R7+,6(R8)
+      DADD.B @R7+,7(R8)
+      DADD.B @R7+,8(R8)
+      DADD.B @R7+,9(R8)
+      DADD.B @R7+,10(R8)
+      DADD.B @R7+,11(R8)
+      DADD.B @R7+,12(R8)
+      DADD.B @R7+,13(R8)
+      DADD.B @R7+,14(R8)
+      DADD.B @R7+,15(R8)
+      MOV R8,R11              ;Needed for comparison below
+      MOV SR,R12              ;Save carry
+      TST R13                 ;If not 0 (nibble mode), sub 17th byte
+      JEQ DivBCD_sub_no_17th_byte
+        INC R11               ;So MSB check below will work
+        MOV R12,SR
+        DADD.B @R7,16(R8)
+        MOV SR,R12
+      DivBCD_sub_no_17th_byte:
+      MOV R12,SR
+    JC DivBCD_inner_loop_done     ;No borrow if carry set 
+    ;CMP #(div_numerator+16),R11   ;Still points to base, not end so +16 not 32
+    CMP #(div_numerator+18),R11   ;Still points to base, not end so +18 not 34
+    JEQ DivBCD_inner_loop_done    ;No borrow if MSB
+    MOV R12,SR                    ;Restore carry
+    DADD.B #0x99,16(R11)
+    MOV SR,R12                    ;Save carry
+    ;JMP DivBCD_sub_loop_next
+    DivBCD_inner_loop_done:
+    
+    ;If still carry, havent got to zero yet
+    ;AND #1,R12
+    ;TST R12
+    MOV R12,SR
+    ;JEQ DivBCD_sub_loop_next
+    JNC DivBCD_sub_loop_next
+      
+      ;Version 4
+      ;DADD.B #0,0(R10)        ;Carry should still be set
+                              ;Increment result
+      ;Version 5
+      CLRC
+      DADD.B R15,0(R10)
+
+      SUB #16,R7
+      JMP DivBCD_sub_loop
+    DivBCD_sub_loop_next:
+    ;Got to zero, so add divisor back
+    ;SUB #16,R7              ;Reset divisor pointer
+      ;(moved below so could put in shortcut)
+    
+    TST R13                   ;Add byte or or nibble shifted version back?
+    JNE DivBCD_add_nibble_back
+      MOV #div_buff2,R11
+      JMP DivBCD_add_nibble_done
+    DivBCD_add_nibble_back:
+      MOV #div_buff_shifted2,R11
+    DivBCD_add_nibble_done:
+    CLRC
+    DADD.B @R11+,0(R8)
+    DADD.B @R11+,1(R8)
+    DADD.B @R11+,2(R8)
+    DADD.B @R11+,3(R8)
+    DADD.B @R11+,4(R8)
+    DADD.B @R11+,5(R8)
+    DADD.B @R11+,6(R8)
+    DADD.B @R11+,7(R8)
+    DADD.B @R11+,8(R8)
+    DADD.B @R11+,9(R8)
+    DADD.B @R11+,10(R8)
+    DADD.B @R11+,11(R8)
+    DADD.B @R11+,12(R8)
+    DADD.B @R11+,13(R8)
+    DADD.B @R11+,14(R8)
+    DADD.B @R11+,15(R8)
+    
+    ;MOV R8,R11                ;Necessary? Leftover from shortcut version?
+    MOV SR,R12               ;Save carry
+    
+    ;Changed below lines to use R8, not R11 like old version     
+    ;JNC DivBCD_inner_loop_add_done    ;Won't there always be a carry though???
+    ;CMP #(div_numerator+16),R8        ;Still points to base, not end so +16 not 32
+    CMP #(div_numerator+18),R8        ;Still points to base, not end so +16 not 32
+    JEQ DivBCD_inner_loop_add_done    ;No borrow if MSB
+    ;SETC                              ;Restore carry
+    MOV R12,SR
+    DADD.B #0x0,16(R8)
+    TST R13                           ;If nibble mode, add back 17th byte too
+    JEQ DivBCD_no_nibble_add_back
+      CLRC
+      DADD.B @R11,16(R8)              ;Add back 17th byte
+      ;CMP #(div_numerator+16-1),R8    ;If not MSB, add back carry here
+      CMP #(div_numerator+18-1),R8    ;If not MSB, add back carry here
+      JEQ DivBCD_nibble_add_back_done
+        SETC                          ;Restore carry
+        DADD.B #0x0,17(R8)
+    DivBCD_nibble_add_back_done:
+    
+    DivBCD_no_nibble_add_back:
+    
+    DivBCD_inner_loop_add_done:
+          
+    SUB #16,R7              ;Reset divisor pointer
+    
+    DivBCD_shortcut:
+    ;SUB #16,R7              ;Reset divisor pointer
+    
+    ;CMP #(div_numerator+1),R8 ;+1 leaves remainder, +0 takes extra byte
+    CMP #(div_numerator+1),R8 ;Adjusted for extra nibble
+    JNE DivBCD_no_return
+      TST R13
+      ;JNE DivBCD_no_return
+      JEQ DivBCD_no_return
+        
+        MOV @R5,R13      ;numerator
+        RLA R13
+        RRA R13          ;extend sign
+        MOV @R4,R10     ;denominator
+        RLA R10
+        RRA R10         ;extend sign
+        SUB R10,R13
+        
+        ;Shift forward one digit if mantissa begins with 0
+        CMP.B #0x10,17(R6)
+        ;JGE DivBCD_no_exp_adjustment
+        JC DivBCD_no_exp_adjustment
+          MOV @R6,R12
+          MOV #0,R9
+          RLC R12
+          RLC R9
+          RLC R12
+          RLC R9
+          RLC R12
+          RLC R9
+          RLC R12
+          RLC R9
+          MOV #8,R12
+          ADD #2,R6
+          DivBCD_exp_adj_loop:
+            MOV @R6,R10
+            MOV #0,R11
+            CLRC
+            RLC R10
+            RLC R11
+            RLC R10
+            RLC R11
+            RLC R10
+            RLC R11
+            RLC R10
+            RLC R11
+            BIS R9,R10
+            MOV R11,R9
+            MOV R10,0(R6)       ;Write to destination
+            ADD #2,R6
+            DEC R12
+          JNE DivBCD_exp_adj_loop
+          SUB #1,R13
+          SUB #18,R6
+        DivBCD_no_exp_adjustment:
+      
+        ;Test R13 to see if exponent in bounds
+        CMP #FLOAT_MIN_EXP,R13
+        JGE DivBCD_no_underflow
+          MOV #ERROR_EXP_UNDERFLOW,R4
+          RET
+        DivBCD_no_underflow:
+        
+        CMP #FLOAT_MAX_EXP+1,R13
+        JL DivBCD_no_overflow
+          MOV #ERROR_EXP_OVERFLOW,R4
+          RET
+        DivBCD_no_overflow:
+          
+        BIC #0x8000,R13
+        MOV R13,0(R6)
+      
+        MOV @R4,R9      ;denominator
+        XOR @R5,R9      ;numerator
+        AND #0x8000,R9
+        BIS R9,0(R6)
+        
+        MOV #0,R4
+        RET
+    DivBCD_no_return:
+    
+    ;Variant 4
+    ;DEC R8          ;Move numerator pointer back one place
+    ;DEC R10         ;Move dest pointer back one
+    
+    ;Variant 5
+    PUSH R7         ;Switch between nibble and byte modes
+    MOV R14,R7
+    POP R14
+    INV R13          ;If now 1, just finished bytewise, so now nibble
+    JNE DivBCD_nibble_mode_1
+      MOV #0x10,R15    ;nibble is 10s place
+      DEC R10         ;Move dest pointer back one
+      JMP DivBCD_sub_loop
+    DivBCD_nibble_mode_1:
+      DEC R8          ;Move numerator pointer back one place
+      ;If very first digit is zero, don't advance to next digit
+        ;R11 and R12 should be free
+      /*
+      MOV R6,R11
+      ADD #17,R11
+      CMP R10,R11
+      JNE DivBCD_first_digit_not_0
+        TST 0(R10)
+        JNE DivBCD_first_digit_not_0
+          ;First digit is zero
+          ;Stay in mode, keep #10, dec R8 above
+          INV R13
+        JMP DivBCD_sub_loop
+      DivBCD_first_digit_not_0:
+      */
+      MOV #1,R15
+    JMP DivBCD_sub_loop
+
+
+;Variant 2 - fast exp so O(log2(n)) not O(n), ie 14 not 18,998 iterations
+ModBCD:
+  ;Python version working which takes as many iterations as exponent (v slow)
+  ;Fast exponent is only log2(n) apparentally
+    ;http://homepages.math.uic.edu/~leon/cs-mcs401-s08/handouts/fastexp.pdf
+   
+  ;Same scheme as others: 
+  ;R4 = denominator
+  ;R5 = numerator
+  ;R6 = destination
+
+  ;If denominator zero, error
+  TST 16(R4)
+  JNE ModBCD_not_zero
+    MOV #ERROR_DIV_ZERO,R4
+    RET
+  ModBCD_not_zero:
+  
+  ;If numerator zero, return zero
+  TST 16(R5)
+  JNE ModBCD_num_not_zero
+    ModBCD_ret_zero:                    ;Label so below can reuse this code
+    MOV #9,R7
+    ModBCD_num_zero:
+      MOV #0,0(R6)
+      ADD #2,R6
+      DEC R7
+      JNE ModBCD_num_zero
+      
+    MOV #0,R4
+    RET
+  ModBCD_num_not_zero:
+  
+  ;Compare exponents
+  MOV @R4,R7
+  BIC #0x8000,R7
+  RLA R7
+  RRA R7
+  
+  MOV @R5,R10
+  BIC #0x8000,R10
+  RLA R10
+  RRA R10
+  
+  SUB R7,R10
+  
+  ;If denominator larger, just copy numerator
+  ;JL ModBCD_copy_exit  ;Too far for relative jump
+  JGE ModBCD_copy_exit_skip
+    BR #ModBCD_copy_exit
+  ModBCD_copy_exit_skip:
+  
+  ;If equal, have to compare first
+  JEQ ModBCD_compare_exp
+  ;Numerator larger, proceed computing
+  ModBCD_compute:
+    
+    ;Different ways of multiplying
+      ;Russian peasant
+      ;Russian peasant with words
+      ;Russian peasant by decimal place
+        ;For words, binary is up to 32 adds (16 doubles, up to 16 if &1)
+        ;Decimal is 36 plus shifts. Hmm shifts slower than converting to binary?
+      ;Squaring is faster than multiplying
+        ;Each multiply occurs twice but only calculate once
+        ;ie 123 * 123 is
+          ;3*3 is equal indexes so just once
+          ;Next is 3*2 so once at 0 since 3 is at 0 and once at 1 since 2 at 1
+      
+    ;R10 is difference in exponents (always positive by this point)
+    
+    ;No need for squaring if difference in exponents less than 16 since always 1E_
+    CMP #16,R10
+    JGE ModBCD_compute_large_exp_diff
+      ;R10 is now the exponent size of y being 1E_R10
+      ;y*k0 (k0 being numerator) is therefore only an adjustment in exponent
+      
+      ;Double length for numerator since could be up to 16 shorter so need 16 more
+      ;Copy numerator to buffer
+      MOV #div_numerator,R9
+      CALL #func_zero_mem
+      ADD #16,R9
+      PUSH R5           ;Save copy of numerator pointer
+      ADD #2,R5         ;Point to data bytes
+      CALL #func_copy16
+      ;Zero 33rd byte
+      MOV.B #0,&div_numerator+32
+      ;POP R5
+
+      ;Make copy of inverted denominator
+      ;PUSH R5
+      MOV R4,R5
+      ADD #2,R5
+      MOV #div_buff_shifted1,R9
+      CALL #func_copy16
+      PUSH R10          ;Save copy of exponent diff
+      MOV #0x6666,R10
+      CALL #func_invert16
+      ;POP R5
+      ;POP R10
+
+      ;Make shifted version of inverted denominator
+      ;PUSH R5
+      MOV #div_buff_shifted1,R5
+      MOV #1,R7
+      MOV #div_buff_shifted2,R8
+      MOV #1,R9
+      ;PUSH R10          ;Save count of diff in exponents
+      CALL #func_shift10
+      ;POP R10
+      ;POP R5
+      
+      ;Create shifted version of denominator
+      ;PUSH R5
+      MOV R4,R5
+      ADD #2,R5
+      MOV #1,R7
+      MOV #div_buff2,R8
+      MOV #0,R9
+      ;PUSH R10          ;Save count of diff in exponents
+      CALL #func_shift10
+      POP R10
+      POP R5
+
+      ;Start with shifted version since diff>=1
+        ;MOV #1,R7
+      ;Actually, start with unshifted. May be faster
+        MOV #0,R7
+        ;Adjust R10 too if start with unshifted
+        INC R10
+             
+      MOV #16,R8
+      ModBCD_div_loop:
+        MOV #div_buff_shifted2,R9
+        TST R7
+        JNE ModBCD_div_loop_shifted
+          MOV #div_buff_shifted1,R9
+        ModBCD_div_loop_shifted:
+        
+        ModBCD_div_loop_inner:
+          SETC
+          DADD.B @R9+,0+div_numerator(R8)
+          DADD.B @R9+,1+div_numerator(R8)
+          DADD.B @R9+,2+div_numerator(R8)
+          DADD.B @R9+,3+div_numerator(R8)
+          DADD.B @R9+,4+div_numerator(R8)
+          DADD.B @R9+,5+div_numerator(R8)
+          DADD.B @R9+,6+div_numerator(R8)
+          DADD.B @R9+,7+div_numerator(R8)
+          DADD.B @R9+,8+div_numerator(R8)
+          DADD.B @R9+,9+div_numerator(R8)
+          DADD.B @R9+,10+div_numerator(R8)
+          DADD.B @R9+,11+div_numerator(R8)
+          DADD.B @R9+,12+div_numerator(R8)
+          DADD.B @R9+,13+div_numerator(R8)
+          DADD.B @R9+,14+div_numerator(R8)
+          DADD.B @R9+,15+div_numerator(R8)
+          
+          JNC ModBCD_div_loop_inner_done
+            ;Not done subtracting
+            SUB #16,R9
+            JMP ModBCD_div_loop_inner
+          ModBCD_div_loop_inner_done:
+          
+          ;Check 17th byte
+          TST.B 16+div_numerator(R8)
+          JEQ ModBCD_div_loop_inner_last_done
+            ;Not done subtracting
+            ;Decrease 17th byte
+            SETC
+            DADD.B #0x98,16+div_numerator(R8)
+            SUB #16,R9
+            JMP ModBCD_div_loop_inner
+          ModBCD_div_loop_inner_last_done:
+        
+        ;Subtracted below zero!
+        ;(Check sign to see if this is right. Assume not for now)
+        MOV #div_buff2,R9
+        TST R7
+        JNE ModBCD_addback_shifted
+          MOV R4,R9
+          ADD #2,R9
+        ModBCD_addback_shifted:
+        CLRC
+        DADD.B @R9+,0+div_numerator(R8)
+        DADD.B @R9+,1+div_numerator(R8)
+        DADD.B @R9+,2+div_numerator(R8)
+        DADD.B @R9+,3+div_numerator(R8)
+        DADD.B @R9+,4+div_numerator(R8)
+        DADD.B @R9+,5+div_numerator(R8)
+        DADD.B @R9+,6+div_numerator(R8)
+        DADD.B @R9+,7+div_numerator(R8)
+        DADD.B @R9+,8+div_numerator(R8)
+        DADD.B @R9+,9+div_numerator(R8)
+        DADD.B @R9+,10+div_numerator(R8)
+        DADD.B @R9+,11+div_numerator(R8)
+        DADD.B @R9+,12+div_numerator(R8)
+        DADD.B @R9+,13+div_numerator(R8)
+        DADD.B @R9+,14+div_numerator(R8)
+        DADD.B @R9+,15+div_numerator(R8)
+        
+        ;See if done subtracting
+        DEC R10
+        JEQ ModBCD_div_loop_done
+          XOR #1,R7
+          JNE ModBCD_div_loop
+            DEC R8
+          JMP ModBCD_div_loop
+          
+      ModBCD_div_loop_done:
+      
+      ;Tests good so far
+      ;Shift and copy to destination, form info word
+      ;Test with negatives too
+      
+      ;If only denom or only numerator negative, calculate denom-result first
+      MOV @R4,R7
+      XOR @R5,R7
+      BIT #0x8000,R7
+      JEQ ModBCD_no_inversion
+        ;First, check if zero (won't show up after substraction)
+        MOV #div_numerator+16,R7        ;Start counting at first byte
+        MOV #8,R8                      ;Check 8 words
+        ModBCD_inversion_loop:
+          TST 0(R7)
+          JNE ModBCD_inversion_no_zero
+          ADD #2,R7
+          DEC R8
+          JNE ModBCD_inversion_loop
+          ;No non-zero words found. Return 0
+          JMP ModBCD_ret_zero
+        ModBCD_inversion_no_zero:
+      
+        ;Invert result in preparation for subtraction
+        MOV #0x6666,R10
+        MOV #div_numerator,R9
+        CALL #func_invert16
+        MOV #div_numerator+16,R9
+        CALL #func_invert16
+        
+        ;Denominator
+        MOV @R4,R8
+        BIC #0x8000,R8
+        RLA R8
+        RRA R8
+        ;Numerator
+        MOV @R5,R7
+        BIC #0x8000,R7
+        RLA R7
+        RRA R7
+        ;Exp diff which is shift count for func_shift10
+        SUB R8,R7
+        
+        ;Shift denominator to match decimal place of result
+        /*
+        PUSH R5
+        MOV R4,R5                 ;source
+        ADD #2,R5
+        MOV #div_buff2,R8         ;dest - shifted by 1 denom no longer needed
+        MOV #0,R9                 ;0 - positive number
+        CALL #func_shift10  
+        POP R5
+        */
+        ;Can't use above since clips to 16 bytes
+        MOV #div_buff1,R9
+        CALL #func_zero_mem
+        MOV #div_buff2,R9
+        CALL #func_zero_mem
+        
+        BIT #1,R7
+        JEQ ModBCD_invert_even
+          ;Difference in exponents is odd
+          MOV R4,R8             ;Denominator
+          ADD #17,R8            ;End of data section
+          MOV #div_buff2+15,R9  ;Destination
+          RRA R7                ;Halve digit count to get byte count
+          SUB R7,R9             ;Offset number of decimal places
+          MOV #16,R10           ;Copy 16 bytes
+          MOV #0,R11            ;Half byte from last byte
+          ModBCD_invert_shift_copy_loop:
+            MOV.B @R8,R12       ;Byte of denominator
+            MOV R12,R13         ;Save byte
+            RRA R12             ;High nibble into low nibble
+            RRA R12
+            RRA R12
+            RRA R12
+            BIS R11,R12         ;OR in high nibble from last byte
+            MOV R13,R11         ;Save low nibble for high nibble next time
+            RLA R11
+            RLA R11
+            RLA R11
+            RLA R11
+            MOV.B R12,0(R9)       ;Write to destination
+            DEC R8              ;Denominator
+            DEC R9              ;Destination
+            DEC R10             ;Count of bytes
+          JNE ModBCD_invert_shift_copy_loop
+          ;Last digit
+          MOV.B R11,0(R9)
+     
+          JMP ModBCD_invert_done
+        ModBCD_invert_even:
+          ;Difference in exponents is even
+          MOV R4,R8             ;Denominator
+          ADD #2,R8             ;Data section
+          MOV #div_buff2,R9     ;Destination
+          RRA R7                ;Halve digit count to get byte count
+          SUB R7,R9             ;Offset number of decimal places
+          MOV #16,R10           ;Copy 16 bytes
+          ModBCD_invert_copy_loop:
+            MOV.B @R8+,0(R9)
+            INC R9
+            DEC R10
+          JNE ModBCD_invert_copy_loop
+        ModBCD_invert_done:
+        
+        ;Add shifted denominator to inverted result
+        MOV #div_buff1,R9
+        MOV #div_numerator,R12
+        SETC
+        CALL #func_add16
+        ;MOV #div_buff2,R9              ;R9 already points to div_buff1+16
+        MOV #div_numerator+16,R12
+        CALL #func_add16
+        
+      ModBCD_no_inversion:
+      
+      ;Count down and see how many leading zeroes
+      MOV #31,R7        ;Start counting at 32nd digit of numerator
+      MOV #0,R8         ;Count of leading zeroes
+      ModBCD_size_count_loop:
+        MOV.B div_numerator(R7),R9
+        TST R9
+        JNE ModBCD_size_count_done      ;Stop looping if non-zero byte
+        ADD #2,R8                       ;Add two leading zeroes
+        DEC R7                          ;Next byte of numerator
+        JNE ModBCD_size_count_loop      
+        ;Counted all the way down and only found zeroes, return zero
+        /*
+        MOV #9,R7
+        ModBCD_remainder_zero:
+          MOV #0,0(R6)
+          ADD #2,R6
+          DEC R7
+          JNE ModBCD_remainder_zero
+        MOV #0,R4
+        RET
+        */
+        ;Reuse code above
+        JMP ModBCD_ret_zero
+      ModBCD_size_count_done:
+      ;Add one more place if byte begins with zero
+      CMP #0x10,R9
+      JGE ModBCD_size_count_even
+        INC R8
+      ModBCD_size_count_even:
+      
+      ;New exponent is numerator exp - count of zeroes
+      MOV @R5,R7        ;Numerator info word
+      BIC #0x8000,R7
+      RLA R7            ;Sign extend
+      RRA R7
+      SUB R8,R7
+      ;Check for exponent underflow
+      CMP #FLOAT_MIN_EXP,R7
+      JGE ModBCD_no_exp_underflow
+        ;Alternately, round to 0 but don't error out
+        MOV #ERROR_EXP_UNDERFLOW,R4
+        RET
+      ModBCD_no_exp_underflow:
+      ;Sign of result is sign of denominator
+      BIC #0x8000,R7    ;Clear sign bit
+      MOV @R4,R9        ;Sign of denominator
+      AND #0x8000,R9    
+      BIS R9,R7         ;Copy denominator sign to info word
+      MOV R7,0(R6)      ;Copy info word to destination
+      
+      ;Copy shifted version to destination
+        ;(shift function only shifts backward, not forward as here)
+      
+      BIT #1,R8                         ;If count odd, shift each byte one digit up
+      JEQ ModBCD_copy_dest_even
+        ;Copy and shift an odd number of digits
+        MOV #div_numerator+16,R7        ;Source of byte copying
+        RRA R8                          ;Top bit definitely 0
+        SUB R8,R7                       ;Subtract zero count/2
+        SETC
+        RLC R8                          ;Shift zero count back
+        MOV #16,R9                      ;Count of bytes
+        MOV R6,R10                      ;Destination
+        ADD #2,R10                      ;Point to BCD data bytes
+        ;MOV #0,R11                      ;Half byte from last byte fetched
+        MOV.B -1(R7),R11
+        RRA R11
+        RRA R11
+        RRA R11
+        RRA R11
+        ModBCD_copy_dest_odd_loop:
+          MOV.B @R7+,R12                ;Load byte
+          ;Try different way here instead of 8x shifts (8 cycles)
+          MOV R12,R13                   ;Save upper nibble for next time
+          RLA R12                       ;Shift low nibble up
+          RLA R12
+          RLA R12
+          RLA R12
+          BIS R11,R12                   ;OR high nibble from last time into low nibble
+          MOV R13,R11                   ;Copy of fetched byte
+          RRA R11                       ;Save high nibble for ORing next time
+          RRA R11
+          RRA R11
+          RRA R11
+          MOV.B R12,0(R10)              ;Write shifted byte
+          INC R10
+          DEC R9
+        JNE ModBCD_copy_dest_odd_loop
+        
+        JMP ModBCD_copy_dest_done        
+      ModBCD_copy_dest_even:
+        ;Copy and shift an even number of digits
+        MOV #div_numerator+16,R7        ;Source of byte copying
+        RRA R8                          ;Top bit definitely 0
+        SUB R8,R7                       ;Subtract zero count/2
+        RLA R8                          ;Shift zero count back (was even so no carry)
+        MOV #16,R9                      ;Count of bytes
+        MOV R6,R10                      ;Destination
+        ADD #2,R10
+        ModBCD_copy_dest_even_loop:
+          MOV.B @R7+,0(R10)
+          INC R10
+          DEC R9
+        JNE ModBCD_copy_dest_even_loop
+      ModBCD_copy_dest_done:
+      
+      MOV #0,R4
+      RET
+
+    ModBCD_compute_large_exp_diff:    
+      ;First, set A to 10
+      MOV #Const_raw_1+2,R5               ;+2 to skip info word
+      MOV #mult_buff1,R9
+      CALL #func_copy16                   ;Copy 1.000 to mult_buff1
+
+      ;Set exponent to 1 to show this is 1 digit in ie 000...10 (32 digits)
+      ;Treat divisor like 32 digit long integer then
+      ;mod while iterating then is just this up to point where exponent is large enough
+      MOV #1,R6                           ;Start A with 1E1, ie 10
+        
+      ;Zero result buffer
+      MOV #mult_result,R9
+      CALL #func_zero_mem
+      ADD #16,R9
+      CALL #func_zero_mem
+      
+      ModBCD_compute_loop:
+        MOV #mult_carry_buff,R9
+        CALL #func_zero_mem
+      
+      JMP $
+  
+  ModBCD_compare_exp:
+    ADD #2,R4   ;Point to start of denominator data
+    ADD #2,R5   ;Point to start of numerator data
+    MOV #8,R7   ;Compare 8 words
+    MOV #1,R9   ;Carry begins set
+    ModBCD_compare_loop:
+      MOV @R4+,R8       
+      ADD #0x6666,R8    ;Hmm, not necesarry actually
+      INV R8            ;Would work in binary mode technically
+      CLRC
+      BIS R9,SR         ;Restore carry
+      DADD @R5+,R8
+      MOV SR,R9         ;Save carry
+      AND #1,R9
+      DEC R7
+    JNE ModBCD_compare_loop
+    
+    SUB #18,R4          ;Reset pointer to denominator in case copy
+    SUB #18,R5          ;Reset pointer to numerator in case copy
+    TST R9              ;If no carry, denominator larger, copy and exit
+    JEQ ModBCD_copy_exit
+    ;Numerator is larger
+    ;Find mod here and avoid long rountine above
+    
+    ;R4 still points 18 bytes past beginning of denominator
+    ;R5 is reset above in case needed for copy exit below
+    ;R6 is destination
+    
+    ADD #2,R5           ;Point to data section of numerator
+    
+    ;Copy numerator to destination
+    ;R5 already points to numerator data
+    MOV R6,R9
+    ADD #2,R9
+    CALL #func_copy16
+    
+    ;Keep subtracting denominator from numerator
+    PUSH R5             ;Save numerator (func needs this register)
+    PUSH R6             ;Save dest, func clobbers this register
+    MOV R4,R5           ;Subtract denominator
+    ADD #18,R5          ;Point to end of denominator
+    MOV R6,R9           ;Set destination
+    ADD #18,R9          ;Point to end of dest (reset to data section below)
+    ModBCD_simple_outer:
+      SUB #16,R5        ;Point to data section of denominator
+      SUB #16,R9        ;Point to data section of destination
+      SETC
+      CALL #func_sub16_keep
+      TST R12
+    JNE ModBCD_simple_outer  
+    POP R6
+    POP R5
+      
+    ;Check signs to see if need to add back or convert
+    ;+ mod + is add back and positive
+    ;+ mod - is no add back and negative
+    ;- mod + is no add back and positive
+    ;- mod - is add back and negative
+    
+    ;Sign matches denominator's in all cases
+    MOV @R4,0(R6)
+    ;Addback denominator if signs match
+    MOV @R4,R8
+    SUB #18,R5            ;Reset pointer to numerator
+    XOR @R5,R8
+    BIT #0x8000,R8
+    JNE ModBCD_no_addback    
+      ;Denominator add back
+      MOV R4,R9           ;Add back denominator
+      ADD #2,R9           ;Point to data section of denominator
+      MOV R6,R12          ;Add to destination
+      ADD #2,R12          ;Point to data section of destination
+      CLRC
+      CALL #func_add16
+      ;Entry point so no_addback below can reuse this code
+      ModBCD_addback_shift_forward:
+      MOV #0,R7        ;Count of leading zeroes
+      MOV R6,R8       ;Destination
+      ADD #17,R8      ;End of number data
+      MOV #16,R9      ;16 bytes of number data
+      ModBCD_addback_shift_forward_loop:
+        MOV.B @R8,R10
+        TST R10
+        JNE ModBCD_addback_shift_forward_not_zero
+          ;Zero so keep counting
+          DEC R8
+          ADD #2,R7   ;Increase zero count
+          DEC R9      ;Bytes left to check
+          JNE ModBCD_addback_shift_forward_loop
+          ;No non zero digits found, return 0
+          JMP ModBCD_ret_zero
+      ModBCD_addback_shift_forward_not_zero:
+      CMP #0x10,R10
+      JGE ModBCD_addback_shift_forward_not_single
+        INC R7
+      ModBCD_addback_shift_forward_not_single:
+      TST R7
+      JEQ ModBCD_addback_shift_forward_done
+        MOV @R6,R8
+        MOV R8,R9       ;Save copy for updating below
+        BIC #0x8000,R8
+        RLA R8
+        RRA R8
+        SUB R7,R8
+        ;Check for exponent underflow
+        CMP #FLOAT_MIN_EXP,R8
+        JGE ModBCD_addback_no_exp_underflow
+          ;Alternately, round to 0 but don't error out
+          MOV #ERROR_EXP_UNDERFLOW,R4
+          RET
+        ModBCD_addback_no_exp_underflow:
+        ;Update exponent
+        BIC #0x8000,R8  ;Clear sign bit of new exponent
+        AND #0x8000,R9  ;Original sign bit
+        BIS R9,R8
+        MOV R8,0(R6)
+        
+        ;Test value
+        ;MOV #0x5678,2(R6)
+        ;MOV #0x1234,4(R6)
+        
+        ;If odd, shift bytes
+        BIT #1,R7
+        JEQ ModBCD_addback_shift_digits
+          ;Odd digits so shift up one
+          MOV R6,R8     ;Pointer into destination
+          MOV #8,R9     ;Shift 8 words
+          MOV #0,R10    ;Nibble to shift in
+          ModBCD_addback_odd_loop:
+            ADD #2,R8   ;Pointer to number data
+            MOV @R8,R11
+            MOV #0,R12
+            RLA R11
+            RLC R12
+            RLA R11
+            RLC R12
+            RLA R11
+            RLC R12
+            RLA R11
+            RLC R12
+            BIS R10,R11
+            MOV R12,R10
+            MOV R11,0(R8)
+            DEC R9
+            JNE ModBCD_addback_odd_loop
+            DEC R7      ;If only one digit, done shifting
+        ModBCD_addback_shift_digits:
+        TST R7
+        JEQ ModBCD_addback_shift_forward_done
+        ;Even number of places left to shift
+        RRA R7          ;Convert places to bytes
+        MOV R6,R9       ;Destination pointer
+        ADD #17,R9      ;Point to end of number data
+        MOV R9,R8       ;Source pointer
+        SUB R7,R8       ;Offset by byte count
+        MOV #16,R10     ;Copy 16-byte count bytes
+        SUB R7,R10
+        ModBCD_addback_shift_loop:
+          MOV.B @R8,0(R9)
+          DEC R8
+          DEC R9
+          DEC R10
+          JNE ModBCD_addback_shift_loop
+        ;Fill lower bytes in with 0
+        MOV R6,R9       ;Beginning of number data
+        ADD #2,R9
+        ModBCD_addback_shift_zero_loop:
+          MOV.B #0,0(R9)
+          DEC R7
+          JNE ModBCD_addback_shift_zero_loop
+        
+      ModBCD_addback_shift_forward_done:
+       
+      MOV #0,R4
+      RET 
+    ModBCD_no_addback:
+    ;No add back but need to invert digits
+    MOV #0x6666,R10
+    MOV R6,R9
+    ADD #2,R9
+    CALL #func_invert16
+    SETC
+    DADD #0,0(R9)
+    DADD #0,2(R9)
+    DADD #0,4(R9)
+    DADD #0,6(R9)
+    DADD #0,8(R9)
+    DADD #0,10(R9)
+    DADD #0,12(R9)
+    DADD #0,14(R9)
+    ;MOV #0,R4
+    ;RET
+    JMP ModBCD_addback_shift_forward
+  ModBCD_copy_exit:
+    ;Behavior depends on sign of arguments
+    
+    ;If (+ mod +) or (- mod -) copy numerator including sign
+    ;If (+ mod -) or (- mod +) denom-num with sign of denom
+    
+    MOV @R4,R8  
+    XOR @R5,R8
+    BIT #0x8000,R8
+    JEQ ModBCD_copy_exit_num
+      ;Signs not equal. denom-num with sign of denom
+      ;Copy denominator with sign to destination
+      MOV R5,R8         ;Save pointer to numerator
+      MOV R4,R5         ;Copy denominator to destination
+      MOV R6,R9 
+      CALL #func_copy18
+      ;Subtract numerator from denominator
+      MOV R8,R5         ;Restore pointer to numerator
+      ADD #2,R5         ;Point to data section of numerator
+      MOV R6,R9         ;Destination (no need to save)
+      ADD #2,R9         ;Point to data section of destination
+      CALL #func_sub16_keep
+      
+      MOV #0,R4
+      RET 
+    ModBCD_copy_exit_num:
+      ;Signs equal, copy numerator including sign
+      ;R5 already points to numerator
+      MOV R6,R9
+      CALL #func_copy18
+      
+      MOV #0,R4
+      RET 
+   
+math_end:
+  
