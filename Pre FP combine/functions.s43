@@ -1,0 +1,347 @@
+;HELPER FUNCTIONS
+;================
+
+;func_add16:
+    ;R9 to R12
+
+;func_copy16:
+    ;R5 to R9
+
+;func_invert16:
+    ;0x6666 in R10
+    ;dest in R9
+
+;func_sub16_destroy:
+    ;R5 to R9
+    ;clobbers R10,R12
+
+;func_sub16_keep:
+    ;R5 to R9
+    ;clobbers R6,R10,R11,R12,R15
+    ;returns carry in R12
+
+;func_shift10:
+    ;R5 is source
+    ;R7 is shift count
+    ;R8 is dest
+    ;R9 is 0 (pos) or 1 (neg)
+    ;clobbers R10,R11,R12
+
+;func_zero_mem:
+    ;dest in R9
+
+func_begin:
+
+;R9 to R12
+func_add16:
+  DADD @R9+,0(R12)
+  DADD @R9+,2(R12)
+  DADD @R9+,4(R12)
+  DADD @R9+,6(R12)
+  DADD @R9+,8(R12)
+  DADD @R9+,10(R12)
+  DADD @R9+,12(R12)
+  DADD @R9+,14(R12)
+RET
+
+;dest is R9
+;source is R5
+func_copy16:
+  MOV @R5+,0(R9)
+  MOV @R5+,2(R9)
+  MOV @R5+,4(R9)
+  MOV @R5+,6(R9)
+  MOV @R5+,8(R9)
+  MOV @R5+,10(R9)
+  MOV @R5+,12(R9)
+  MOV @R5+,14(R9)
+RET
+
+;dest is R9
+;0x6666 in R10
+func_invert16:
+  ADD R10,0(R9)
+  ADD R10,2(R9)
+  ADD R10,4(R9)
+  ADD R10,6(R9)
+  ADD R10,8(R9)
+  ADD R10,10(R9)
+  ADD R10,12(R9)
+  ADD R10,14(R9)
+  INV 0(R9)
+  INV 2(R9)
+  INV 4(R9)
+  INV 6(R9)
+  INV 8(R9)
+  INV 10(R9)
+  INV 12(R9)
+  INV 14(R9)
+RET
+
+;R5 to R9
+;clobbers R10,R12
+func_sub16_destroy:
+  MOV #0x6666,R10
+  MOV R9,R12
+  MOV R5,R9
+  CALL #func_invert16
+  SETC
+  CALL #func_add16
+RET
+
+;R5 to R9
+;Clobbers R6,R10,R11,R12,R15
+;Returns carry in R12
+func_sub16_keep:
+  ;Copy and invert is 176, this is 156
+  MOV #0x6666,R6        ;Constant
+  ;MOV #0xFFFE,R15       ;Constant
+  MOV #1,R12            ;Carry
+  MOV #8,R10            ;Loop counter
+  func_sub16_loop:
+    MOV @R5+,R11
+    ADD R6,R11
+    INV R11
+    ;AND R15,SR
+    CLRC
+    BIS R12,SR
+    DADD R11,0(R9)
+    MOV SR,R12
+    AND #1,R12
+    ADD #2,R9
+    DEC R10
+  JNE func_sub16_loop
+RET
+
+;R5 is source
+;R7 is shift count
+;R8 is dest
+;R9 is 0 (pos) or 1 (neg)
+;clobbers R9,R10,R11,R12
+;NOTE: would be faster to calculate offsets only once!
+func_shift10:
+  TST R9
+  JNE func_shift10_fill_neg
+    MOV R8,R9
+    CALL #func_zero_mem
+    MOV #0,R11          ;Used below to show that filled 0s
+    JMP func_shift10_fill_done
+  func_shift10_fill_neg:
+    MOV #0x9999,R9
+    MOV R9,0(R8)
+    MOV R9,2(R8)
+    MOV R9,4(R8)
+    MOV R9,6(R8)
+    MOV R9,8(R8)
+    MOV R9,10(R8)
+    MOV R9,12(R8)
+    MOV R9,14(R8)
+    MOV #1,R11          ;Used below to show filled 9999
+  func_shift10_fill_done:
+  ;dest now zeroed out (or 0x9999 if neg)
+  ADD #14,R5
+  ADD #14,R8
+  MOV R7,R9
+  RRA R9
+  RRA R9   ;Faster than AND #0xFE,R9?
+  RLA R9
+  SUB R9,R8
+  ;R8 now points to starting place for shifting dest
+  RRA R9
+  MOV #8,R10
+  SUB R9,R10
+  ;R10 is now count of words
+  MOV R7,R9
+  AND #3,R9
+  ;R9 is nibble offset
+  JNE shift10_not_0
+    ;If adjustment is 0
+    shift10_0_loop:
+      MOV @R5,0(R8)
+      SUB #2,R5
+      SUB #2,R8
+      DEC R10
+      JNE shift10_0_loop
+    ;JMP shift10_done
+    RET
+  shift10_not_0:
+  CMP #1,R9
+  JNE shift10_not_1
+    ;If adjustment is 1
+    
+    MOV #0,R12
+    TST R11
+    JEQ shift10_1_fill_9
+      MOV #0x9000,R12
+    shift10_1_fill_9:
+    
+    shift10_1_loop:
+      MOV @R5,R9
+      SUB #2,R5
+      MOV #0,R11
+      CLRC
+      RRC R9
+      RRC R11
+      RRA R9
+      RRC R11
+      RRA R9
+      RRC R11
+      RRA R9
+      RRC R11
+      BIS R12,R9
+      MOV R9,0(R8)
+      SUB #2,R8
+      MOV R11,R12
+      DEC R10
+      JNE shift10_1_loop
+    ;JMP shift10_done
+    RET
+  shift10_not_1:
+  CMP #2,R9
+  JNE shift10_3
+    ;If adjustment is 2
+    
+    //18 cycles
+    /*
+    MOV #0,R11
+    MOV #0,R12
+    shift10_2_loop:
+      MOV @R5,R9
+      SUB #2,R5
+      SWPB R9
+      MOV R9,R11
+      AND.B #0xFF,R9
+      AND #0xFF00,R11
+      BIS R12,R9
+      MOV R9,0(R8)
+      SUB #2,R8
+      MOV R11,R12
+      DEC R10
+      JNE shift10_2_loop
+    ;JMP shift10_done
+    RET
+    */
+    
+    //18 cycles
+    /*
+    MOV #0,R11
+    MOV #0,R12
+    shift10_2_loop:
+      ;18 cycles
+      MOV.B @R5,R11 
+      MOV.B 1(R5),0(R8)
+      MOV.B R12,1(R8)
+      MOV R11,R12
+      SUB #2,R5
+      SUB #2,R8
+      DEC R10
+      JNE shift10_2_loop
+    RET
+    */
+    
+    //17 cycles
+    
+    ;MOV #0,R11         ;Why was this here???
+    MOV #0,R12
+    TST R11
+    JEQ shift10_2_fill_99
+      MOV #0x9900,R12
+    shift10_2_fill_99:
+    
+    MOV #0,R12
+    shift10_2_loop:
+      MOV @R5,R9
+      MOV.B R9,R11
+      SWPB R11
+      SWPB R9
+      MOV.B R9,R9
+      BIS R12,R9
+      MOV R9,0(R8)
+      MOV R11,R12
+      SUB #2,R5
+      SUB #2,R8
+      DEC R10
+      JNE shift10_2_loop
+    RET
+    
+    
+    //19 cycles
+    /*
+    MOV #0,R11
+    MOV #0,R12
+    shift10_2_loop:
+      CMP #1,R10
+      JEQ shift10_2_skip
+        MOV.B 0(R5),-1(R8)
+      shift10_2_skip:
+      MOV.B 1(R5),0(R8)
+      SUB #2,R5
+      SUB #2,R8
+      DEC R10
+      JNE shift10_2_loop
+    RET
+    */
+    
+    //19 cycles
+    /*
+    MOV #0,R11
+    MOV #0,R12
+    INC R5
+    shift10_2_loop:
+      MOV.B @R5,R9
+      DEC R5
+      MOV.B @R5,R11
+      DEC R5
+      MOV.B R9,0(R8)
+      MOV.B R12,1(R8)
+      MOV.B R11,R12
+      SUB #2,R8
+      DEC R10
+      JNE shift10_2_loop
+    RET
+    */
+    
+  shift10_3:
+    ;If adjustment is 3
+
+    MOV #0,R12
+    TST R11
+    JEQ shift10_3_fill_999
+      MOV #0x9990,R12
+    shift10_3_fill_999:
+    
+    shift10_3_loop:
+      MOV @R5,R9
+      SUB #2,R5
+      MOV #0,R11
+      RLA R9
+      RLC R11
+      RLA R9
+      RLC R11
+      RLA R9
+      RLC R11
+      RLA R9
+      RLC R11
+      BIS R12,R11
+      MOV R11,0(R8)
+      SUB #2,R8
+      MOV R9,R12
+      DEC R10
+      JNE shift10_3_loop
+  shift10_done:
+RET
+
+;dest in R9
+func_zero_mem:
+  MOV #0,0(R9)
+  MOV #0,2(R9)
+  MOV #0,4(R9)
+  MOV #0,6(R9)
+  MOV #0,8(R9)
+  MOV #0,10(R9)
+  MOV #0,12(R9)
+  MOV #0,14(R9)
+RET  
+
+func_end:
+

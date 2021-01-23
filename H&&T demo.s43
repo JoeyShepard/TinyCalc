@@ -1,0 +1,136 @@
+  ;***********
+  ;*DEMO MODE*
+  ;***********
+  CALL #puts_immed
+  DB "Press a key"
+  EVEN
+  MOV #1,R6
+  CALL #LCD_row
+  MOV #0,R6
+  CALL #LCD_column
+  CALL #puts_immed
+  DB "sin(   "
+  EVEN
+  MOV #CUST_DEG,R6
+  CALL #putc
+  CALL #puts_immed
+  DB ")="
+  EVEN
+  
+  MOV #0,R7
+  draw_loop_outer:
+    MOV R7,R6
+    CALL #LCD_row
+    MOV #66,R6
+    CALL #LCD_column
+    MOV #0xFF,R4
+    CALL #LCD_data_out
+    INC R7
+    CMP #4,R7
+    JNE draw_loop_outer
+  
+  draw_loop_2:
+    MOV #55,R8
+    draw_loop_inner2:
+      MOV #0x1,R4
+      CALL #LCD_data_out
+      DEC R8
+      JNE draw_loop_inner2
+  
+  MOV #0x3F00,&demo_trig
+  MOV #demo_trig+2,R9
+  CALL #func_zero_mem
+  MOV #0x3000,&demo_trig+16
+  
+  MOV #0x10,demo_angle
+  demo_outer:
+    MOV #1,R6
+    CALL #LCD_row
+    MOV #24,R6
+    CALL #LCD_column
+    
+    MOV.B &demo_angle+1,R6
+    ADD #'0',R6
+    CALL #putc
+    MOV.B &demo_angle,R6
+    CALL #putc_hex
+    
+    MOV.B &demo_angle,&demo_trig+17
+    
+    MOV #0,R4               ;Comparison mode for tan
+    MOV #TrigK_inv,R5       ;X=1/K
+    MOV #Const_raw_0,R6     ;Y=0
+    MOV #demo_trig,R7       ;Z=arg=30 degrees
+    MOV #num3,R8            ;dest
+    CALL #CordicBCD
+    
+    CLRC
+    DADD #0x10,&demo_angle
+    CMP.B #0x90,&demo_angle
+    JNE demo_angle_no_reset
+      MOV.B #0x10,&demo_angle
+    demo_angle_no_reset:
+    
+    MOV #2,R6
+    CALL #LCD_row
+    MOV #0,R6
+    CALL #LCD_column
+    
+    CALL #puts_immed
+    DB "0."
+    EVEN
+    
+    MOV #15,&demo_counter
+    demo_print:
+      MOV &demo_counter,R4
+      MOV.B trig_Y(R4),R6
+      CALL #putc_hex
+      DEC &demo_counter
+      CMP #11,&demo_counter
+      JNE demo_print
+      
+      MOV #3,R6
+      CALL #LCD_row
+      MOV #0,R6
+      CALL #LCD_column
+      
+    demo_print2:
+      MOV &demo_counter,R4
+      MOV.B trig_Y(R4),R6
+      CALL #putc_hex
+      DEC &demo_counter
+      CMP #6,&demo_counter
+      JNE demo_print2
+    
+    demo_loop:
+      CALL #demo_key_down
+      TST R4
+      JEQ demo_loop
+    ;On press
+    demo_loop2:
+      CALL #demo_key_down
+      TST R4
+      JNE demo_loop2
+    ;On release
+    ;MOV #'1',R6
+    ;CALL #putc_stay
+    JMP demo_outer
+    
+  JMP $
+    
+    
+    ;R4 - 0 if no keys, 1 if any key
+    demo_key_down:
+      CALL #scankeys
+      MOV #keys_down,R4
+      demo_key_down_loop:
+        CMP.B #0xFF,0(R4)
+        JNE demo_key_down_1
+          MOV #1,R4
+          RET
+        demo_key_down_1:
+        INC R4
+        CMP #(keys_down+30),R4
+        JNE demo_key_down_loop
+      MOV #0,R4
+      RET

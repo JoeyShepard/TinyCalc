@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <fileVersion>2</fileVersion>
+    <fileChecksum>2304827042</fileChecksum>
+    <configuration>
+        <name>Debug</name>
+        <outputs>
+            <file>$PROJ_DIR$\LCD.s43</file>
+            <file>$PROJ_DIR$\main.s43</file>
+            <file>$PROJ_DIR$\Debug\Exe\TinyCalc.d43</file>
+            <file>$PROJ_DIR$\Debug\Obj\main.r43</file>
+            <file>$PROJ_DIR$\input.s43</file>
+            <file>$PROJ_DIR$\stack.s43</file>
+            <file>$PROJ_DIR$\Debug\Obj\asm.r43</file>
+            <file>$PROJ_DIR$\functions.s43</file>
+            <file>$PROJ_DIR$\stack_draw.s43</file>
+            <file>$PROJ_DIR$\error.s43</file>
+            <file>$PROJ_DIR$\character_table.s43</file>
+            <file>$PROJ_DIR$\cordic.s43</file>
+            <file>$PROJ_DIR$\keys.s43</file>
+            <file>$TOOLKIT_DIR$\inc\msp430g2553.h</file>
+            <file>$PROJ_DIR$\macros.s43</file>
+            <file>$PROJ_DIR$\const.s43</file>
+            <file>$TOOLKIT_DIR$\inc\msp430.h</file>
+            <file>$PROJ_DIR$\math.s43</file>
+            <file>$PROJ_DIR$\asm.s43</file>
+            <file>$PROJ_DIR$\debug.s43</file>
+            <file>$PROJ_DIR$\msp430.s43</file>
+            <file>$PROJ_DIR$\sizes.s43</file>
+            <file>$PROJ_DIR$\Debug\List\TinyCalc.map</file>
+            <file>$TOOLKIT_DIR$\config\linker\lnk430g2553.xcl</file>
+        </outputs>
+        <file>
+            <name>$PROJ_DIR$\main.s43</name>
+            <outputs>
+                <tool>
+                    <name>A430</name>
+                    <file> 3</file>
+                </tool>
+            </outputs>
+            <inputs>
+                <tool>
+                    <name>A430</name>
+                    <file> 16 13 14 10 15 11 19 9 7 4 12 0 17 20 21 5 8</file>
+                </tool>
+            </inputs>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\Debug\Exe\TinyCalc.d43</name>
+            <outputs>
+                <tool>
+                    <name>XLINK</name>
+                    <file> 22</file>
+                </tool>
+            </outputs>
+            <inputs>
+                <tool>
+                    <name>XLINK</name>
+                    <file> 23 3</file>
+                </tool>
+            </inputs>
+        </file>
+        <file>
+            <name>$PROJ_DIR$\asm.s43</name>
+            <outputs>
+                <tool>
+                    <name>A430</name>
+                    <file> 6</file>
+                </tool>
+            </outputs>
+            <inputs>
+                <tool>
+                    <name>A430</name>
+                    <file> 16 13 14 10 15 11 9 7 4 12 0</file>
+                </tool>
+            </inputs>
+        </file>
+        <file>
+            <name>[ROOT_NODE]</name>
+            <outputs>
+                <tool>
+                    <name>XLINK</name>
+                    <file> 2 22</file>
+                </tool>
+            </outputs>
+        </file>
+    </configuration>
+    <configuration>
+        <name>Release</name>
+        <outputs />
+        <forcedrebuild>
+            <name>[MULTI_TOOL]</name>
+            <tool>XLINK</tool>
+        </forcedrebuild>
+    </configuration>
+</project>

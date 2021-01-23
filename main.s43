@@ -567,7 +567,6 @@ main:
         BIS #0x8000,&temp_result
       CordicNormalize_not_neg:
       
-      
       main_sin_done:
       CALL #process_one_arg
       
